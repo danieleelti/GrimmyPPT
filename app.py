@@ -36,21 +36,20 @@ else:
 # --- SETUP API KEY ---
 api_key = st.secrets.get("GOOGLE_API_KEY")
 
-# --- FUNZIONE GENERATORE TEMPLATE TECNICO (Nuova) ---
+# --- FUNZIONE GENERATORE TEMPLATE TECNICO (16:9) ---
 def create_technical_template():
-    """Crea un PPT vuoto (16:9) con i layout rinominati correttamente per Grimmy."""
+    """Crea un PPT vuoto in 16:9 con i layout rinominati correttamente per Grimmy."""
     prs = Presentation()
     
-    # --- IMPOSTAZIONE 16:9 (WIDESCREEN) ---
-    # Python-pptx di base crea 4:3. Lo forziamo a 16:9 HD.
+    # --- FORZA WIDESCREEN 16:9 ---
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
-    # --------------------------------------
+    # -----------------------------
 
     master = prs.slide_master
     layouts = master.slide_layouts
     
-    # Funzione helper per le note
+    # Helper per note
     def add_hint(layout, text):
         try:
             txBox = layout.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(12), Inches(1))
@@ -61,17 +60,15 @@ def create_technical_template():
             tf.paragraphs[0].font.bold = True
         except: pass
 
-    # Rinomina Layout (Mapping su standard template)
-    
     # 0. COVER
     if len(layouts) > 0:
         layouts[0].name = "Cover_Main"
         add_hint(layouts[0], "LAYOUT: Cover_Main (Titolo + Sottotitolo + Immagine NanoBanana)")
 
-    # 1. INTRO
+    # 1. INTRO (Il Concept Emotivo)
     if len(layouts) > 1:
         layouts[1].name = "Intro_Concept"
-        add_hint(layouts[1], "LAYOUT: Intro_Concept (Titolo + Testo Emozionale)")
+        add_hint(layouts[1], "LAYOUT: Intro_Concept (Titolo + Frase a effetto breve/informale)")
 
     # 2. LOGISTICS 
     if len(layouts) > 2:
@@ -81,7 +78,7 @@ def create_technical_template():
     # 3. ACTIVITY 
     if len(layouts) > 3:
         layouts[3].name = "Activity_Detail"
-        add_hint(layouts[3], "LAYOUT: Activity_Detail (Descrizione + Foto)")
+        add_hint(layouts[3], "LAYOUT: Activity_Detail (Descrizione operativa + Foto)")
 
     # 4. TECHNICAL 
     if len(layouts) > 4:
@@ -105,7 +102,6 @@ def create_technical_template():
         layouts[8].name = "Closing_Contact"
         add_hint(layouts[8], "FISSO: Closing_Contact (Contatti finali)")
 
-    # Salva in memoria
     output = BytesIO()
     prs.save(output)
     output.seek(0)
@@ -115,7 +111,6 @@ def create_technical_template():
 with st.sidebar:
     st.title("⚙️ Configurazione")
     
-    # 1. API KEY
     if not api_key:
         api_key = st.text_input("Google API Key", type="password")
         if not api_key:
@@ -126,10 +121,10 @@ with st.sidebar:
 
     st.markdown("---")
     
-    # 2. SCELTA MODELLI
+    # SCELTA MODELLI
     st.subheader("🧠 I Modelli AI")
     
-    # Cervello (Testo)
+    # Testo (Gemini)
     try:
         all_models = list(genai.list_models())
         text_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods and 'gemini' in m.name]
@@ -150,7 +145,7 @@ with st.sidebar:
     except Exception as e:
         selected_text_model = "gemini-3-pro-preview"
 
-    # NanoBanana (Immagini)
+    # Immagini (NanoBanana)
     imagen_options = [
         "imagen-3.0-generate",
         "imagen-3.0-generate-001",
@@ -162,12 +157,11 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # 3. GESTIONE TEMPLATE (GENERATORE + UPLOAD)
+    # GESTIONE TEMPLATE
     st.subheader("📂 Il Template Master")
     
-    # A. Generatore
-    with st.expander("🛠️ Crea Nuovo Scheletro"):
-        st.caption("Genera un file .pptx vuoto con i nomi layout corretti. Scaricalo, modificalo in PowerPoint (grafica) e poi ricaricalo qui sotto.")
+    with st.expander("🛠️ Crea Nuovo Scheletro (16:9)"):
+        st.caption("Genera un file .pptx vuoto e Widescreen. Scaricalo, modificalo in PowerPoint e ricaricalo qui sotto.")
         if st.button("Genera Scheletro Tecnico"):
             tpl_bytes = create_technical_template()
             st.download_button(
@@ -178,7 +172,6 @@ with st.sidebar:
                 key="dl_skeleton"
             )
 
-    # B. Uploader
     template = st.file_uploader("Carica il Template Master (.pptx)", type=["pptx"])
     if template:
         st.success("✅ Template caricato!")
@@ -187,7 +180,6 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # 4. PULSANTE TEST
     if st.button("❤️ Check Salute"):
         with st.status("Diagnostica...") as status:
             try:
@@ -203,7 +195,7 @@ with st.sidebar:
             except: st.error("❌ Errore NanoBanana")
             status.update(label="Test Finito", state="complete")
 
-# --- FUNZIONI CORE (APP) ---
+# --- FUNZIONI CORE ---
 
 def extract_content(file_path):
     prs = Presentation(file_path)
@@ -228,16 +220,23 @@ def extract_content(file_path):
 
 def get_gemini_plan_and_prompts(text, model_name):
     model = genai.GenerativeModel(model_name)
+    
+    # PROMPT AGGIORNATO PER STILE INFORMALE NELLA INTRO
     prompt = f"""
     Sei Grimmy, un Senior Art Director specializzato in presentazioni Corporate.
     ANALIZZA questo contenuto grezzo: "{text[:3500]}"...
     
     OBIETTIVO 1: Ristruttura le slide mappandole su questi layout del Master: 
+    
     - Cover_Main (Titolo, Sottotitolo)
-    - Intro_Concept (Concept emotivo)
-    - Activity_Detail (Dettagli operativi)
-    - Technical_Grid (Scheda tecnica)
-    - Logistics_Info (Logistica)
+    
+    - Intro_Concept (Titolo: "Il Concept". Body: Scrivi UNA SOLA frase a effetto, breve (max 20 parole). 
+      Deve essere uno slogan informale, simpatico e creativo che colleghi l'attività all'immagine visiva del team building. 
+      Esempio: "Mettetevi comodi, oggi si cucina!" oppure "Pronti a sporcarvi le mani? No perditempo!")
+    
+    - Activity_Detail (Dettagli operativi, usa elenchi puntati chiari)
+    - Technical_Grid (Scheda tecnica: durata, pax, location)
+    - Logistics_Info (Logistica: cosa è incluso/escluso)
     
     OBIETTIVO 2: Scrivi 2 PROMPT per generare un'immagine di COPERTINA usando 'NanoBanana' (Google Imagen).
     I prompt devono essere in INGLESE, estremamente dettagliati.
