@@ -36,9 +36,9 @@ else:
 # --- SETUP API KEY ---
 api_key = st.secrets.get("GOOGLE_API_KEY")
 
-# --- SIDEBAR: IL CERVELLO DI GRIMMY (STEP 0) ---
+# --- SIDEBAR: CENTRO DI CONTROLLO (Configurazione + Template) ---
 with st.sidebar:
-    st.header("⚙️ I Sensi di Grimmy")
+    st.title("⚙️ Configurazione")
     
     # 1. API KEY
     if not api_key:
@@ -49,78 +49,69 @@ with st.sidebar:
     
     genai.configure(api_key=api_key)
 
-    # 2. SCELTA MODELLO TESTO (Logica e Scrittura)
-    st.subheader("1. Cervello (Logica)")
+    st.markdown("---")
+    
+    # 2. SCELTA MODELLI
+    st.subheader("🧠 I Modelli AI")
+    
+    # Cervello (Testo)
     try:
-        # Auto-discovery dei modelli Gemini
         all_models = list(genai.list_models())
         text_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods and 'gemini' in m.name]
         text_models.sort(reverse=True) 
         
-        # --- IMPOSTAZIONE DEFAULT UTENTE ---
-        default_gemini = "gemini-3-pro-preview" # Target richiesto
-        
-        # Cerchiamo di forzare il default in cima alla lista
-        # (Gestisce sia il caso in cui esiste con 'models/' sia se dobbiamo aggiungerlo a mano)
+        default_gemini = "gemini-3-pro-preview"
         target_found = False
         for i, m in enumerate(text_models):
-            if default_gemini in m: # Se trova 'models/gemini-3-pro-preview'
-                default_gemini = m # Aggiorna col nome completo
+            if default_gemini in m:
+                default_gemini = m
                 text_models.pop(i)
                 text_models.insert(0, default_gemini)
                 target_found = True
                 break
-        
-        if not target_found:
-            # Se non c'è nella lista (es. è una preview privata o nome custom), lo aggiungiamo in cima
-            text_models.insert(0, default_gemini)
+        if not target_found: text_models.insert(0, default_gemini)
 
-        selected_text_model = st.selectbox(
-            "Versione Gemini", 
-            text_models, 
-            index=0
-        )
+        selected_text_model = st.selectbox("Cervello (Logica)", text_models, index=0)
     except Exception as e:
-        st.error(f"Grimmy non riesce a connettersi: {e}")
-        # Fallback sul default richiesto
         selected_text_model = "gemini-3-pro-preview"
 
-    # 3. SCELTA MODELLO IMMAGINI (NanoBanana)
-    st.subheader("2. NanoBanana (Arte)")
+    # NanoBanana (Immagini)
     imagen_options = [
-        "imagen-3.0-generate",       # <-- NUOVO DEFAULT
+        "imagen-3.0-generate",
         "imagen-3.0-generate-001",
         "imagen-2.0-generate-001",
         "turing-preview",
         "image-generation-001"
     ]
-    selected_image_model = st.selectbox("Versione Imagen", imagen_options)
+    selected_image_model = st.selectbox("NanoBanana (Arte)", imagen_options)
 
-    # 4. PULSANTE TEST CONNESSIONE
-    if st.button("❤️ Controlla Battito Cardiaco"):
-        with st.status("Diagnostica di Grimmy in corso...") as status:
-            # Test Testo
+    st.markdown("---")
+
+    # 3. CARICAMENTO TEMPLATE (Spostato qui)
+    st.subheader("📂 Il Template Master")
+    template = st.file_uploader("Carica qui il file .pptx vuoto", type=["pptx"])
+    if template:
+        st.success("Template caricato!")
+    else:
+        st.info("⚠️ Carica il template per abilitare Grimmy.")
+
+    st.markdown("---")
+
+    # 4. PULSANTE TEST
+    if st.button("❤️ Check Salute"):
+        with st.status("Diagnostica...") as status:
             try:
-                st.write(f"Ping Cervello ({selected_text_model})...")
                 model = genai.GenerativeModel(selected_text_model)
-                res = model.generate_content("Ciao Grimmy")
+                res = model.generate_content("Ping")
                 st.write("✅ Cervello OK")
-            except Exception as e:
-                st.error(f"❌ Errore Cervello: {e}")
+            except: st.error("❌ Errore Cervello")
             
-            # Test Immagine
             try:
-                st.write(f"Ping NanoBanana ({selected_image_model})...")
                 img_model = genai.ImageGenerationModel(selected_image_model)
-                res = img_model.generate_images(prompt="A minimalist robot face", number_of_images=1)
+                res = img_model.generate_images(prompt="Dot", number_of_images=1)
                 st.write("✅ NanoBanana OK")
-            except Exception as e:
-                st.error(f"❌ Errore NanoBanana: {e}")
-            
-            status.update(label="Grimmy è pronto!", state="complete")
-    
-    st.divider()
-    st.caption(f"Grimmy sta usando:\n🧠 {selected_text_model}\n🎨 {selected_image_model}")
+            except: st.error("❌ Errore NanoBanana")
+            status.update(label="Test Finito", state="complete")
 
 # --- FUNZIONI CORE ---
 
@@ -251,56 +242,65 @@ def create_final_pptx(plan, cover_image_bytes, template_path):
 
     return prs
 
-# --- INTERFACCIA PRINCIPALE ---
+# --- INTERFACCIA PRINCIPALE (Workspace) ---
 
 st.title("🤖 Grimmy PPT Agent")
-st.markdown("""
-Ciao! Sono **Grimmy**. 
-Dammi i tuoi vecchi file e li trasformerò usando i layout ufficiali. 
-Uso **Gemini** per ragionare sui testi e **NanoBanana** per creare le copertine.
-""")
+st.markdown("### Area di Lavoro")
 
 if "step" not in st.session_state: st.session_state.step = 1
 if "data" not in st.session_state: st.session_state.data = {}
 
-# STEP 1: UPLOAD
+# STEP 1: UPLOAD SOURCE (Solo File da convertire)
 if st.session_state.step == 1:
-    col1, col2 = st.columns(2)
-    with col1: template = st.file_uploader("1. Template Master (.pptx)", type=["pptx"])
-    with col2: source = st.file_uploader("2. Vecchio PPT (.pptx)", type=["pptx"])
     
-    if st.button("Chiedi a Grimmy di lavorare") and template and source:
-        with st.spinner("Grimmy sta leggendo il file e NanoBanana sta scaldando i pennelli..."):
-            # Salvataggio
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as t:
-                t.write(template.getvalue())
-                st.session_state.data['tpl_path'] = t.name
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as s:
-                s.write(source.getvalue())
-                st.session_state.data['src_path'] = s.name
+    st.info("Trascina qui sotto il file PowerPoint vecchio da convertire. Assicurati di aver caricato il Template nella barra laterale a sinistra.")
+    
+    # Uploader centrale a tutta larghezza
+    source = st.file_uploader("Drop Zone: Vecchio PPT (.pptx)", type=["pptx"])
+    
+    # Spazio
+    st.write("")
+    st.write("")
+    
+    # Pulsante Azione
+    if st.button("🚀 Chiedi a Grimmy di lavorare", type="primary"):
+        if not template:
+            st.error("🛑 Aspetta! Non hai caricato il TEMPLATE nella barra laterale sinistra.")
+        elif not source:
+            st.error("🛑 Non hai caricato nessun file da convertire qui sopra.")
+        else:
+            with st.spinner("Grimmy sta leggendo il file e NanoBanana sta scaldando i pennelli..."):
+                # Salvataggio
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as t:
+                    t.write(template.getvalue())
+                    st.session_state.data['tpl_path'] = t.name
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as s:
+                    s.write(source.getvalue())
+                    st.session_state.data['src_path'] = s.name
 
-            # Esecuzione
-            txt, orig_img = extract_content(st.session_state.data['src_path'])
-            st.session_state.data['orig_img'] = orig_img
-            
-            # CHIAMATA AI
-            plan = get_gemini_plan_and_prompts(txt, selected_text_model)
-            st.session_state.data['plan'] = plan
-            
-            if plan:
-                st.info(f"NanoBanana sta dipingendo con il modello: {selected_image_model}...")
-                img_a = generate_imagen_image(plan['cover_prompt_a'], selected_image_model)
-                img_b = generate_imagen_image(plan['cover_prompt_b'], selected_image_model)
+                # Esecuzione
+                txt, orig_img = extract_content(st.session_state.data['src_path'])
+                st.session_state.data['orig_img'] = orig_img
                 
-                st.session_state.data['img_a'] = img_a
-                st.session_state.data['img_b'] = img_b
-            
-            st.session_state.step = 2
-            st.rerun()
+                # CHIAMATA AI
+                plan = get_gemini_plan_and_prompts(txt, selected_text_model)
+                st.session_state.data['plan'] = plan
+                
+                if plan:
+                    st.info(f"NanoBanana sta dipingendo con il modello: {selected_image_model}...")
+                    img_a = generate_imagen_image(plan['cover_prompt_a'], selected_image_model)
+                    img_b = generate_imagen_image(plan['cover_prompt_b'], selected_image_model)
+                    
+                    st.session_state.data['img_a'] = img_a
+                    st.session_state.data['img_b'] = img_b
+                
+                st.session_state.step = 2
+                st.rerun()
 
 # STEP 2: SELEZIONE E DOWNLOAD
 elif st.session_state.step == 2:
-    st.subheader("Scegli la Cover creata da NanoBanana")
+    st.subheader("🎨 Scegli la Cover creata da NanoBanana")
+    st.markdown("Grimmy ha preparato il contenuto. Ora tocca a te scegliere il volto della presentazione.")
     
     col1, col2, col3 = st.columns(3)
     selection = None
@@ -310,17 +310,17 @@ elif st.session_state.step == 2:
         if st.session_state.data.get('orig_img'):
             st.image(st.session_state.data['orig_img'], use_container_width=True)
             if st.button("Usa Originale"): selection = "orig"
-        else: st.info("Nessuna immagine originale trovata")
+        else: st.info("Nessuna immagine originale")
 
     with col2:
-        st.markdown("**NanoBanana: Stile Corporate**")
+        st.markdown("**Stile Corporate**")
         if st.session_state.data.get('img_a'):
             st.image(st.session_state.data['img_a'], use_container_width=True)
             if st.button("Scegli Corporate"): selection = "A"
-        else: st.warning("Errore generazione Corporate")
+        else: st.warning("Errore generazione")
 
     with col3:
-        st.markdown("**NanoBanana: Stile Creativo**")
+        st.markdown("**Stile Creativo**")
         if st.session_state.data.get('img_b'):
             st.image(st.session_state.data['img_b'], use_container_width=True)
             if st.button("Scegli Creativo"): selection = "B"
@@ -331,7 +331,7 @@ elif st.session_state.step == 2:
         elif selection == "A": final_img = st.session_state.data.get('img_a')
         elif selection == "B": final_img = st.session_state.data.get('img_b')
         
-        with st.spinner("Grimmy sta impaginando il file finale..."):
+        with st.spinner("Grimmy sta assemblando il PPT finale..."):
             new_prs = create_final_pptx(
                 st.session_state.data['plan'], 
                 final_img, 
@@ -342,9 +342,10 @@ elif st.session_state.step == 2:
             with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp_out:
                 new_prs.save(tmp_out.name)
                 with open(tmp_out.name, "rb") as f:
-                    st.download_button("📥 SCARICA IL LAVORO DI GRIMMY", f, output_name)
+                    st.success("✅ Lavoro completato!")
+                    st.download_button("📥 SCARICA PPTX", f, output_name, type="primary")
         
-        st.divider()
-        if st.button("Ricomincia con un altro file"):
+        st.write("")
+        if st.button("🔄 Ricomincia con un altro file"):
             st.session_state.step = 1
             st.rerun()
