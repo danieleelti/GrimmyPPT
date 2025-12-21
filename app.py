@@ -1,7 +1,7 @@
 import streamlit as st
 import google.generativeai as genai
 from pptx import Presentation
-from pptx.util import Inches
+from pptx.util import Inches, Pt
 import tempfile
 import json
 import re
@@ -36,7 +36,76 @@ else:
 # --- SETUP API KEY ---
 api_key = st.secrets.get("GOOGLE_API_KEY")
 
-# --- SIDEBAR: CENTRO DI CONTROLLO (Configurazione + Template) ---
+# --- FUNZIONE GENERATORE TEMPLATE TECNICO (Nuova) ---
+def create_technical_template():
+    """Crea un PPT vuoto con i layout rinominati correttamente per Grimmy."""
+    prs = Presentation()
+    master = prs.slide_master
+    layouts = master.slide_layouts
+    
+    # Funzione helper per le note
+    def add_hint(layout, text):
+        try:
+            txBox = layout.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9), Inches(1))
+            tf = txBox.text_frame
+            tf.text = text
+            tf.paragraphs[0].font.color.rgb = None # Default
+            tf.paragraphs[0].font.size = Pt(12)
+            tf.paragraphs[0].font.bold = True
+        except: pass
+
+    # Rinomina Layout (Mapping su standard template 16:9)
+    # Nota: I layout ID possono variare, usiamo gli indici standard di un clean pptx
+    
+    # 0. COVER
+    if len(layouts) > 0:
+        layouts[0].name = "Cover_Main"
+        add_hint(layouts[0], "LAYOUT: Cover_Main (Titolo + Sottotitolo + Immagine NanoBanana)")
+
+    # 1. INTRO
+    if len(layouts) > 1:
+        layouts[1].name = "Intro_Concept"
+        add_hint(layouts[1], "LAYOUT: Intro_Concept (Titolo + Testo Emozionale)")
+
+    # 2. LOGISTICS (Spesso layout Section Header)
+    if len(layouts) > 2:
+        layouts[2].name = "Logistics_Info"
+        add_hint(layouts[2], "LAYOUT: Logistics_Info (Cosa incluso/escluso)")
+
+    # 3. ACTIVITY (Spesso layout Two Content)
+    if len(layouts) > 3:
+        layouts[3].name = "Activity_Detail"
+        add_hint(layouts[3], "LAYOUT: Activity_Detail (Descrizione + Foto)")
+
+    # 4. TECHNICAL (Spesso layout Comparison)
+    if len(layouts) > 4:
+        layouts[4].name = "Technical_Grid"
+        add_hint(layouts[4], "LAYOUT: Technical_Grid (Scheda tecnica, durate, pax)")
+
+    # --- SLIDE FISSE (Rinominiamo layout inutilizzati) ---
+    if len(layouts) > 5:
+        layouts[5].name = "Standard_Training"
+        add_hint(layouts[5], "FISSO: Standard_Training (Grafica Formazione)")
+    
+    if len(layouts) > 6:
+        layouts[6].name = "Standard_Extras"
+        add_hint(layouts[6], "FISSO: Standard_Extras (Foto/Video/Gadget)")
+
+    if len(layouts) > 7:
+        layouts[7].name = "Standard_Payment"
+        add_hint(layouts[7], "FISSO: Standard_Payment (IBAN/Banca)")
+
+    if len(layouts) > 8:
+        layouts[8].name = "Closing_Contact"
+        add_hint(layouts[8], "FISSO: Closing_Contact (Contatti finali)")
+
+    # Salva in memoria
+    output = BytesIO()
+    prs.save(output)
+    output.seek(0)
+    return output
+
+# --- SIDEBAR: CENTRO DI CONTROLLO ---
 with st.sidebar:
     st.title("⚙️ Configurazione")
     
@@ -87,11 +156,26 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # 3. CARICAMENTO TEMPLATE (Spostato qui)
+    # 3. GESTIONE TEMPLATE (GENERATORE + UPLOAD)
     st.subheader("📂 Il Template Master")
-    template = st.file_uploader("Carica qui il file .pptx vuoto", type=["pptx"])
+    
+    # A. Generatore
+    with st.expander("🛠️ Crea Nuovo Scheletro"):
+        st.caption("Genera un file .pptx vuoto con i nomi layout corretti. Scaricalo, modificalo in PowerPoint (grafica) e poi ricaricalo qui sotto.")
+        if st.button("Genera Scheletro Tecnico"):
+            tpl_bytes = create_technical_template()
+            st.download_button(
+                label="📥 Scarica Template_Grimmy_Base.pptx",
+                data=tpl_bytes,
+                file_name="Template_Grimmy_Base.pptx",
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                key="dl_skeleton"
+            )
+
+    # B. Uploader
+    template = st.file_uploader("Carica il Template Master (.pptx)", type=["pptx"])
     if template:
-        st.success("Template caricato!")
+        st.success("✅ Template caricato!")
     else:
         st.info("⚠️ Carica il template per abilitare Grimmy.")
 
@@ -113,10 +197,9 @@ with st.sidebar:
             except: st.error("❌ Errore NanoBanana")
             status.update(label="Test Finito", state="complete")
 
-# --- FUNZIONI CORE ---
+# --- FUNZIONI CORE (APP) ---
 
 def extract_content(file_path):
-    """Estrae testo e cover originale."""
     prs = Presentation(file_path)
     full_text = []
     first_image = None 
@@ -138,9 +221,7 @@ def extract_content(file_path):
     return "\n".join(full_text), first_image
 
 def get_gemini_plan_and_prompts(text, model_name):
-    """Grimmy pianifica la ristrutturazione."""
     model = genai.GenerativeModel(model_name)
-    
     prompt = f"""
     Sei Grimmy, un Senior Art Director specializzato in presentazioni Corporate.
     ANALIZZA questo contenuto grezzo: "{text[:3500]}"...
@@ -174,10 +255,8 @@ def get_gemini_plan_and_prompts(text, model_name):
         return None
 
 def generate_imagen_image(prompt, model_name):
-    """NanoBanana dipinge l'immagine."""
     try:
         imagen_model = genai.ImageGenerationModel(model_name)
-        
         response = imagen_model.generate_images(
             prompt=prompt + ", high quality, 4k, photorealistic, no text overlays",
             number_of_images=1,
@@ -196,7 +275,6 @@ def generate_imagen_image(prompt, model_name):
         return None
 
 def create_final_pptx(plan, cover_image_bytes, template_path):
-    """Assembla il PPT finale."""
     prs = Presentation(template_path)
     layout_map = {l.name: l for l in prs.slide_master_layouts}
     
@@ -242,7 +320,7 @@ def create_final_pptx(plan, cover_image_bytes, template_path):
 
     return prs
 
-# --- INTERFACCIA PRINCIPALE (Workspace) ---
+# --- INTERFACCIA PRINCIPALE ---
 
 st.title("🤖 Grimmy PPT Agent")
 st.markdown("### Area di Lavoro")
@@ -250,19 +328,16 @@ st.markdown("### Area di Lavoro")
 if "step" not in st.session_state: st.session_state.step = 1
 if "data" not in st.session_state: st.session_state.data = {}
 
-# STEP 1: UPLOAD SOURCE (Solo File da convertire)
+# STEP 1: UPLOAD SOURCE
 if st.session_state.step == 1:
     
     st.info("Trascina qui sotto il file PowerPoint vecchio da convertire. Assicurati di aver caricato il Template nella barra laterale a sinistra.")
     
-    # Uploader centrale a tutta larghezza
     source = st.file_uploader("Drop Zone: Vecchio PPT (.pptx)", type=["pptx"])
     
-    # Spazio
     st.write("")
     st.write("")
     
-    # Pulsante Azione
     if st.button("🚀 Chiedi a Grimmy di lavorare", type="primary"):
         if not template:
             st.error("🛑 Aspetta! Non hai caricato il TEMPLATE nella barra laterale sinistra.")
@@ -270,7 +345,6 @@ if st.session_state.step == 1:
             st.error("🛑 Non hai caricato nessun file da convertire qui sopra.")
         else:
             with st.spinner("Grimmy sta leggendo il file e NanoBanana sta scaldando i pennelli..."):
-                # Salvataggio
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as t:
                     t.write(template.getvalue())
                     st.session_state.data['tpl_path'] = t.name
@@ -278,11 +352,9 @@ if st.session_state.step == 1:
                     s.write(source.getvalue())
                     st.session_state.data['src_path'] = s.name
 
-                # Esecuzione
                 txt, orig_img = extract_content(st.session_state.data['src_path'])
                 st.session_state.data['orig_img'] = orig_img
                 
-                # CHIAMATA AI
                 plan = get_gemini_plan_and_prompts(txt, selected_text_model)
                 st.session_state.data['plan'] = plan
                 
