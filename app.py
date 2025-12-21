@@ -1,251 +1,263 @@
 import streamlit as st
-import os
 import google.generativeai as genai
 from pptx import Presentation
-from pptx.util import Inches
+from pptx.util import Inches, Pt
 import tempfile
-import time
+import json
+import re
+import os
 
 # --- CONFIGURAZIONE PAGINA ---
-st.set_page_config(page_title="AI PPTX Restyler", layout="wide")
+st.set_page_config(page_title="AI Team Building Restyler", layout="wide", page_icon="🎨")
 
-# --- BLOCCO DI SICUREZZA (LOGIN) ---
+# --- AUTHENTICATION ---
 def check_password():
-    """Ritorna True se l'utente è loggato, altrimenti chiede password."""
-    
-    # Se la password non è definita nei secrets, mostra errore (o permetti accesso libero se preferisci)
     if "APP_PASSWORD" not in st.secrets:
         st.warning("⚠️ 'APP_PASSWORD' non trovata in secrets.toml. Accesso libero (non sicuro).")
         return True
-
-    # Inizializza lo stato di autenticazione
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
-
-    # Se è già autenticato, procedi
     if st.session_state.authenticated:
         return True
 
-    # Se non è autenticato, mostra il form di login
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        st.title("🔒 Accesso Richiesto")
-        password = st.text_input("Inserisci la password di accesso", type="password")
-        
-        if st.button("Accedi"):
+        st.title("🔒 Accesso Team Building AI")
+        password = st.text_input("Password", type="password")
+        if st.button("Entra"):
             if password == st.secrets["APP_PASSWORD"]:
                 st.session_state.authenticated = True
                 st.rerun()
             else:
-                st.error("Password non corretta.")
-            
+                st.error("Password errata.")
     return False
 
-# Se il check password fallisce, ferma l'esecuzione qui.
 if not check_password():
     st.stop()
 
-# =========================================================
-#  DA QUI IN POI IL CODICE VIENE ESEGUITO SOLO SE LOGGATI
-# =========================================================
-
-# --- GESTIONE API KEY GEMINI ---
-api_key = None
-
-# 1. Prova a prendere la chiave dai Secrets
-if "GOOGLE_API_KEY" in st.secrets:
-    api_key = st.secrets["GOOGLE_API_KEY"]
-
-# 2. Se non c'è, chiedila nella Sidebar
+# --- SETUP API ---
+api_key = st.secrets.get("GOOGLE_API_KEY")
 if not api_key:
     with st.sidebar:
-        st.header("Configurazione API")
-        api_key = st.text_input("Inserisci Gemini API Key", type="password")
+        api_key = st.text_input("Gemini API Key", type="password")
         if not api_key:
-            st.warning("Inserisci la chiave API di Google per continuare.")
             st.stop()
-
-# Configura Gemini
 genai.configure(api_key=api_key)
 
-# --- INTERFACCIA PRINCIPALE ---
-st.title("🤖 AI PowerPoint Restyler Agent")
-st.markdown("Carica i tuoi vecchi PPTX e il nuovo Template. L'AI migrerà i contenuti.")
-st.markdown("---")
+# --- FUNZIONI DI SUPPORTO ---
 
-# --- FUNZIONI CORE ---
+def extract_content_from_pptx(file_path):
+    """Estrae testo e immagini dal vecchio PPTX."""
+    prs = Presentation(file_path)
+    full_text = []
+    images = []
 
-def get_gemini_decision(slide_text, available_layouts):
+    for slide in prs.slides:
+        slide_text = []
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text.strip():
+                slide_text.append(shape.text.strip())
+            
+            # Estrazione Immagini (Shape Type 13 = Picture)
+            if shape.shape_type == 13:
+                try:
+                    image_blob = shape.image.blob
+                    images.append(image_blob)
+                except:
+                    pass
+        
+        if slide_text:
+            full_text.append(" | ".join(slide_text))
+    
+    return "\n".join(full_text), images
+
+def clean_json_response(text):
+    """Pulisce la risposta di Gemini per estrarre il JSON puro."""
+    text = re.sub(r"```json\s*", "", text)
+    text = re.sub(r"```", "", text)
+    return text.strip()
+
+def get_ai_restyling_plan(source_text):
     """
-    Chiede a Gemini quale layout usare basandosi sul testo della vecchia slide.
+    Il cervello dell'operazione. Chiede a Gemini di mappare il contenuto vecchio
+    sui nuovi layout specifici.
     """
-    # Usa 'gemini-1.5-flash' per velocità o 'gemini-1.5-pro' per maggiore intelligenza
-    model = genai.GenerativeModel('gemini-1.5-flash') 
+    model = genai.GenerativeModel('gemini-1.5-pro-latest') # Uso PRO per ragionamento complesso
     
     prompt = f"""
-    Ho una slide con questo contenuto testuale:
-    "{slide_text}"
+    Sei un Senior Event Manager esperto in Team Building aziendali.
+    Il tuo compito è ristrutturare il contenuto grezzo di una vecchia presentazione in un nuovo formato strutturato.
     
-    I layout disponibili nel nuovo template sono: {available_layouts}.
-    
-    Il tuo compito:
-    1. Analizza il contenuto (è un titolo? è un elenco puntato? è una frase di chiusura?).
-    2. Scegli il NOME esatto del layout più adatto tra quelli forniti.
-    3. Restituisci SOLO il nome del layout, nient'altro.
+    CONTENUTO GREZZO (Source):
+    "{source_text}"
+
+    LAYOUT DISPONIBILI (Target):
+    1. "Cover_Main": Solo Titolo evento e Sottotitolo (claim).
+    2. "Intro_Concept": Spiegazione emotiva/strategica del concept.
+    3. "Activity_Detail": Descrizione operativa delle attività (Cosa si fa). Se il testo è lungo, usa più slide di questo tipo.
+    4. "Technical_Grid": Durata, Luogo, Numero partecipanti, Requisiti tecnici.
+    5. "Logistics_Info": Cosa è incluso, cosa è escluso, logistica.
+
+    REGOLE DI SCRITTURA (Tone of Voice):
+    - Tono: Professionale, coinvolgente, esperto.
+    - NON INVENTARE FATTI: Usa solo le durate, i prezzi e i dettagli presenti nel testo. Se mancano, non metterli.
+    - Se la descrizione delle attività è povera, espandila leggermente rendendola accattivante ("selling mode"), ma senza aggiungere strumenti o prove non previste.
+
+    OUTPUT RICHIESTO:
+    Restituisci ESCLUSIVAMENTE un array JSON. Ogni oggetto rappresenta una slide.
+    Struttura:
+    [
+        {{ "layout": "Cover_Main", "title": "...", "body": "..." }},
+        {{ "layout": "Intro_Concept", "title": "...", "body": "..." }},
+        ...
+    ]
     """
     
     try:
         response = model.generate_content(prompt)
-        chosen_layout = response.text.strip()
-        
-        # Verifica se la risposta contiene uno dei layout validi
-        for layout in available_layouts:
-            if layout in chosen_layout:
-                return layout
-        # Fallback se la risposta è strana
-        return available_layouts[0]
+        cleaned_json = clean_json_response(response.text)
+        return json.loads(cleaned_json)
     except Exception as e:
-        return available_layouts[0]
+        st.error(f"Errore nell'elaborazione AI: {e}")
+        return []
 
-def copy_images(source_slide, target_slide):
-    """
-    Tenta di copiare le immagini dalla slide vecchia alla nuova.
-    Le posiziona in fila partendo da sinistra.
-    """
-    left = Inches(1)
-    top = Inches(2.5)
-    height = Inches(3)
+def create_new_pptx(plan, images, template_path):
+    """Crea il PPT fisico unendo il piano AI, le immagini estratte e le slide fisse."""
+    prs = Presentation(template_path)
     
-    for shape in source_slide.shapes:
-        # 13 è il tipo PICTURE
-        if shape.shape_type == 13: 
-            try:
-                # Estrae i byte dell'immagine
-                image_stream = shape.image.blob
-                # Salva su file temporaneo (necessario per python-pptx)
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_img:
-                    tmp_img.write(image_stream)
-                    tmp_img_path = tmp_img.name
-                
-                # Aggiunge alla nuova slide
-                target_slide.shapes.add_picture(tmp_img_path, left, top, height=height)
-                left = left + Inches(3.5) # Sposta la prossima immagine a destra
-            except Exception:
-                pass # Ignora immagini corrotte o problematiche
-
-def process_presentation(source_file, template_path):
-    """Logica principale di conversione."""
-    source_prs = Presentation(source_file)
-    target_prs = Presentation(template_path)
+    # Mappa layout per nome
+    layout_map = {l.name: l for l in prs.slide_master_layouts}
     
-    # Mappatura dei layout del nuovo template
-    layout_map = {layout.name: layout for layout in target_prs.slide_master_layouts}
-    layout_names = list(layout_map.keys())
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    total_slides = len(source_prs.slides)
-    
-    for i, slide in enumerate(source_prs.slides):
-        status_text.text(f"Elaborazione slide {i+1} di {total_slides}...")
+    # 1. Generazione Slide Variabili (da AI)
+    img_index = 0
+    for slide_data in plan:
+        layout_name = slide_data.get("layout", "Intro_Concept")
         
-        # 1. Estrazione Testo
-        text_content = []
-        for shape in slide.shapes:
-            if hasattr(shape, "text") and shape.text.strip():
-                text_content.append(shape.text)
-        full_text = " | ".join(text_content)
-        
-        # 2. Decisione AI (Layout)
-        # Se c'è pochissimo testo, usiamo il primo layout (spesso Titolo) senza chiamare l'AI
-        if len(full_text) < 10:
-             chosen_layout_name = layout_names[0] 
-        else:
-             chosen_layout_name = get_gemini_decision(full_text, layout_names)
-        
-        # Fallback sicuro se il nome non esiste
-        if chosen_layout_name not in layout_map:
-            # Prova a prendere il secondo layout (spesso Contenuto) se esiste, altrimenti il primo
-            chosen_layout_name = layout_names[1] if len(layout_names) > 1 else layout_names[0]
+        # Fallback se il layout non esiste nel template
+        if layout_name not in layout_map:
+            st.warning(f"Layout '{layout_name}' non trovato nel template. Uso il primo disponibile.")
+            layout_name = list(layout_map.keys())[0]
             
-        selected_layout = layout_map[chosen_layout_name]
+        slide = prs.slides.add_slide(layout_map[layout_name])
         
-        # 3. Creazione Nuova Slide
-        new_slide = target_prs.slides.add_slide(selected_layout)
-        
-        # 4. Migrazione Contenuto Testuale
+        # Inserimento Testi
         try:
-            # Titolo
-            if new_slide.shapes.title:
-                new_slide.shapes.title.text = text_content[0] if text_content else ""
+            if slide.shapes.title:
+                slide.shapes.title.text = slide_data.get("title", "")
             
-            # Corpo (cerca placeholder idx 1)
-            body_shape = None
-            for shape in new_slide.placeholders:
-                if shape.placeholder_format.idx == 1:
-                    body_shape = shape
-                    break
-            
-            if body_shape and len(text_content) > 1:
-                # Unisce tutto il testo tranne il titolo
-                body_text = "\n".join(text_content[1:])
-                body_shape.text = body_text
-        except Exception:
-            pass # Continua anche se il testo fallisce
+            # Cerca il placeholder del corpo (Body)
+            for shape in slide.placeholders:
+                if shape.placeholder_format.idx == 1: # Standard body placeholder
+                    shape.text = slide_data.get("body", "")
+        except Exception as e:
+            print(f"Errore testo su slide {layout_name}: {e}")
 
-        # 5. Migrazione Immagini
-        copy_images(slide, new_slide)
-        
-        # Aggiorna progress bar
-        progress_bar.progress((i + 1) / total_slides)
-        time.sleep(0.1) # Pausa minima per non sovraccaricare API
+        # Inserimento Immagini (Strategia "a rotazione")
+        # Se il layout non è la cover (spesso ha sfondo fisso) e abbiamo immagini disponibili
+        if layout_name != "Cover_Main" and img_index < len(images):
+            try:
+                # Salviamo l'immagine temporaneamente
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_img:
+                    tmp_img.write(images[img_index])
+                    tmp_path = tmp_img.name
+                
+                # Cerchiamo un placeholder immagine, altrimenti la piazziamo a lato
+                img_placeholder = None
+                for shape in slide.placeholders:
+                    if shape.placeholder_format.type == 18: # 18 = PICTURE
+                        img_placeholder = shape
+                        break
+                
+                if img_placeholder:
+                    img_placeholder.insert_picture(tmp_path)
+                else:
+                    # Posizionamento manuale standard (es. in basso a destra)
+                    slide.shapes.add_picture(tmp_path, Inches(7.5), Inches(2.5), height=Inches(2.5))
+                
+                img_index += 1
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
-    status_text.text("Elaborazione completata!")
-    return target_prs
+    # 2. Aggiunta Slide Fisse (Standard)
+    # Queste slide vengono aggiunte alla fine, vuote di contenuto "nuovo" ma con la grafica del master
+    fixed_layouts = ["Standard_Training", "Standard_Extras", "Standard_Payment", "Closing_Contact"]
+    
+    for fl_name in fixed_layouts:
+        if fl_name in layout_map:
+            prs.slides.add_slide(layout_map[fl_name])
+        else:
+            st.warning(f"⚠️ Layout fisso '{fl_name}' mancante nel Master.")
 
-# --- INTERFACCIA DI CARICAMENTO ---
+    return prs
+
+# --- INTERFACCIA STREAMLIT ---
+
+st.title("🚀 Team Building PPT Refactory")
+st.markdown("""
+Questo agente trasforma i vecchi PPT nel nuovo Format Aziendale.
+**Logica:**
+1. Estrae i contenuti.
+2. L'AI li riorganizza in una narrazione coerente (Cover -> Concept -> Attività -> Tecnica).
+3. Aggiunge automaticamente le slide standard (Formazione, Pagamenti, Contatti).
+""")
 
 col1, col2 = st.columns(2)
-
 with col1:
-    st.info("Step 1: Il Modello")
-    uploaded_template = st.file_uploader("Carica il Template (.pptx/.potx)", type=['pptx', 'potx'])
-
+    template_file = st.file_uploader("1. Carica il Template (.pptx)", type=["pptx", "potx"])
 with col2:
-    st.info("Step 2: I File Vecchi")
-    uploaded_files = st.file_uploader("Carica i file da convertire", type=['pptx'], accept_multiple_files=True)
+    source_files = st.file_uploader("2. Carica i vecchi PPT", type=["pptx"], accept_multiple_files=True)
 
-# --- AVVIO PROCESSO ---
+if st.button("Avvia Trasformazione") and template_file and source_files:
+    
+    # Salva template temp
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp_template:
+        tmp_template.write(template_file.getvalue())
+        template_path = tmp_template.name
 
-if st.button("Avvia Elaborazione 🚀"):
-    if not uploaded_template or not uploaded_files:
-        st.error("Per favore carica sia il template che almeno un file da convertire.")
-    else:
-        # Salva il template su disco temporaneamente
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp_template:
-            tmp_template.write(uploaded_template.getvalue())
-            template_path = tmp_template.name
-
-        # Ciclo sui file caricati
-        for uploaded_file in uploaded_files:
-            st.subheader(f"📄 Elaborazione: {uploaded_file.name}")
+    progress_bar = st.progress(0)
+    
+    for idx, uploaded_file in enumerate(source_files):
+        st.subheader(f"🛠️ Elaborazione: {uploaded_file.name}")
+        
+        # 1. Estrazione
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp_src:
+            tmp_src.write(uploaded_file.getvalue())
+            src_path = tmp_src.name
             
-            try:
-                # Chiama la funzione principale
-                new_prs = process_presentation(uploaded_file, template_path)
+        raw_text, images_list = extract_content_from_pptx(src_path)
+        st.info(f"Contenuto estratto. Analisi AI in corso...")
+        
+        # 2. Pianificazione AI
+        ai_plan = get_ai_restyling_plan(raw_text)
+        
+        if not ai_plan:
+            st.error("L'AI non è riuscita a generare un piano. Riprova.")
+            continue
+            
+        # 3. Creazione
+        try:
+            new_prs = create_new_pptx(ai_plan, images_list, template_path)
+            
+            output_name = f"RESTYLED_{uploaded_file.name}"
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp_out:
+                new_prs.save(tmp_out.name)
                 
-                # Prepara il file per il download
-                output_name = f"NEW_{uploaded_file.name}"
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp_out:
-                    new_prs.save(tmp_out.name)
-                    
-                    with open(tmp_out.name, "rb") as file:
-                        st.download_button(
-                            label=f"📥 Scarica {output_name}",
-                            data=file,
-                            file_name=output_name,
-                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                        )
-            except Exception as e:
-                # Qui c'era l'errore: ora è gestito correttamente
-                st.error(f"Errore durante l'elaborazione di {uploaded_file.name}: {e}")
+                with open(tmp_out.name, "rb") as f:
+                    st.download_button(
+                        label=f"📥 Scarica {output_name}",
+                        data=f,
+                        file_name=output_name,
+                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                    )
+            st.success("Fatto!")
+            
+        except Exception as e:
+            st.error(f"Errore nella generazione del file: {e}")
+            
+        progress_bar.progress((idx + 1) / len(source_files))
+        
+        # Pulizia temp
+        if os.path.exists(src_path): os.remove(src_path)
+
+    if os.path.exists(template_path): os.remove(template_path)
