@@ -38,24 +38,30 @@ api_key = st.secrets.get("GOOGLE_API_KEY")
 
 # --- FUNZIONE GENERATORE TEMPLATE TECNICO (Nuova) ---
 def create_technical_template():
-    """Crea un PPT vuoto con i layout rinominati correttamente per Grimmy."""
+    """Crea un PPT vuoto (16:9) con i layout rinominati correttamente per Grimmy."""
     prs = Presentation()
+    
+    # --- IMPOSTAZIONE 16:9 (WIDESCREEN) ---
+    # Python-pptx di base crea 4:3. Lo forziamo a 16:9 HD.
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+    # --------------------------------------
+
     master = prs.slide_master
     layouts = master.slide_layouts
     
     # Funzione helper per le note
     def add_hint(layout, text):
         try:
-            txBox = layout.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9), Inches(1))
+            txBox = layout.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(12), Inches(1))
             tf = txBox.text_frame
             tf.text = text
-            tf.paragraphs[0].font.color.rgb = None # Default
+            tf.paragraphs[0].font.color.rgb = None 
             tf.paragraphs[0].font.size = Pt(12)
             tf.paragraphs[0].font.bold = True
         except: pass
 
-    # Rinomina Layout (Mapping su standard template 16:9)
-    # Nota: I layout ID possono variare, usiamo gli indici standard di un clean pptx
+    # Rinomina Layout (Mapping su standard template)
     
     # 0. COVER
     if len(layouts) > 0:
@@ -67,22 +73,22 @@ def create_technical_template():
         layouts[1].name = "Intro_Concept"
         add_hint(layouts[1], "LAYOUT: Intro_Concept (Titolo + Testo Emozionale)")
 
-    # 2. LOGISTICS (Spesso layout Section Header)
+    # 2. LOGISTICS 
     if len(layouts) > 2:
         layouts[2].name = "Logistics_Info"
         add_hint(layouts[2], "LAYOUT: Logistics_Info (Cosa incluso/escluso)")
 
-    # 3. ACTIVITY (Spesso layout Two Content)
+    # 3. ACTIVITY 
     if len(layouts) > 3:
         layouts[3].name = "Activity_Detail"
         add_hint(layouts[3], "LAYOUT: Activity_Detail (Descrizione + Foto)")
 
-    # 4. TECHNICAL (Spesso layout Comparison)
+    # 4. TECHNICAL 
     if len(layouts) > 4:
         layouts[4].name = "Technical_Grid"
         add_hint(layouts[4], "LAYOUT: Technical_Grid (Scheda tecnica, durate, pax)")
 
-    # --- SLIDE FISSE (Rinominiamo layout inutilizzati) ---
+    # --- SLIDE FISSE ---
     if len(layouts) > 5:
         layouts[5].name = "Standard_Training"
         add_hint(layouts[5], "FISSO: Standard_Training (Grafica Formazione)")
