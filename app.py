@@ -6,15 +6,26 @@ from pptx.util import Inches
 import tempfile
 import time
 
-# --- CONFIGURAZIONE ---
+# --- CONFIGURAZIONE E GESTIONE SECRETS ---
 st.set_page_config(page_title="AI PPTX Restyler", layout="wide")
 
-# Sidebar per API Key
-with st.sidebar:
-    st.header("Configurazione")
-    api_key = st.text_input("Gemini API Key", type="password")
-    if api_key:
-        genai.configure(api_key=api_key)
+api_key = None
+
+# 1. Prova a prendere la chiave dai Secrets di Streamlit
+if "GOOGLE_API_KEY" in st.secrets:
+    api_key = st.secrets["GOOGLE_API_KEY"]
+
+# 2. Se non c'è nei secrets, chiedila nella Sidebar (utile per test rapidi o per altri utenti)
+if not api_key:
+    with st.sidebar:
+        st.header("Configurazione")
+        api_key = st.text_input("Inserisci Gemini API Key", type="password")
+        if not api_key:
+            st.warning("Inserisci la chiave API per continuare.")
+            st.stop() # Ferma l'app finché non c'è la chiave
+
+# Configura la libreria
+genai.configure(api_key=api_key)
 
 st.title("🤖 AI PowerPoint Restyler Agent")
 st.markdown("Carica i tuoi vecchi PPTX e il nuovo Template. L'AI migrerà i contenuti.")
