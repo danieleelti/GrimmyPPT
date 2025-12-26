@@ -17,7 +17,7 @@ def check_password():
     pwd = password_placeholder.text_input("Password di Accesso", type="password")
     
     if st.sidebar.button("Accedi"):
-        if pwd == st.secrets["general"]["app_password"]:
+        if pwd == st.secrets["app_password"]:
             st.session_state['password_correct'] = True
             password_placeholder.empty()
             st.rerun()
