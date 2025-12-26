@@ -1,9 +1,7 @@
 streamlit
 python-pptx
+google-generativeai>=0.8.3
+pillow
+watchdog
 python-dotenv
 pandas
-pillow
-google-generativeai>=0.8.3
-python-pptx
-streamlit
-watchdog
