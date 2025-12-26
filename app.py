@@ -42,6 +42,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("🧠 Cervello")
+    # Tenta di forzare il modello richiesto
     default_text = "gemini-3-pro-preview" 
     text_options = [default_text, "gemini-1.5-pro-latest", "gemini-1.5-flash"]
     selected_text_model = st.selectbox("Modello Testo", text_options, index=0)
@@ -56,50 +57,29 @@ with st.sidebar:
     template = st.file_uploader("Carica Template (.pptx)", type=["pptx"])
     if template: st.success("Template OK")
 
-# --- FUNZIONI CORE AVANZATE (FORENSIC MODE) ---
+# --- FUNZIONI CORE (BULLETPROOF) ---
 
 def try_get_image_from_shape(shape):
-    """Tenta di estrarre un blob immagine da una shape, in qualsiasi modo sia nascosta."""
     try:
-        # CASO 1: È un'immagine classica
         if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
             return shape.image.blob
-        
-        # CASO 2: È una forma con RIEMPIMENTO immagine (comune nei template)
-        if hasattr(shape, 'fill'):
-            # 6 = MSO_FILL.PICTURE (non importiamo l'enum per brevità, usiamo il valore int)
-            if shape.fill.type == 6: 
-                # A volte fallisce se l'immagine è corrotta
-                try: return shape.fill.fore_color.type # check dummy
-                except: pass
-                # Non c'è un metodo diretto facile in python-pptx per estrarre il blob dal fill 
-                # senza hacking profondi, ma spesso è identificato come Picture
-                pass 
-
-        # CASO 3: È un GRUPPO di forme
+        if hasattr(shape, 'fill') and shape.fill.type == 6: # Picture fill
+             pass # Background fills are extremely hard to extract in python-pptx
         if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
             for child in shape.shapes:
                 blob = try_get_image_from_shape(child)
                 if blob: return blob
-                
-        # CASO 4: Placeholder Immagine (Type 18)
         if shape.is_placeholder and shape.placeholder_format.type == 18:
-            if hasattr(shape, "image"):
-                return shape.image.blob
-
-    except Exception:
-        pass
+            if hasattr(shape, "image"): return shape.image.blob
+    except: pass
     return None
 
 def extract_content(file_path):
-    """
-    Scansiona Slide, Layout, Master e Sfondi per trovare l'immagine.
-    """
     prs = Presentation(file_path)
     full_text = []
     first_image = None 
     
-    # --- ESTRAZIONE TESTO ---
+    # Text Extraction
     for slide in prs.slides:
         txt = []
         for shape in slide.shapes:
@@ -107,56 +87,66 @@ def extract_content(file_path):
                 txt.append(shape.text.strip())
         if txt: full_text.append(" | ".join(txt))
 
-    # --- CACCIA ALL'IMMAGINE (Deep Scan) ---
+    # Image Forensic Scan
     if len(prs.slides) > 0:
         slide = prs.slides[0]
-        layout = slide.slide_layout
-        master = layout.slide_master
-        
-        # ORDINE DI RICERCA:
-        # 1. Forme nella Slide
-        # 2. Forme nel Layout
-        # 3. Forme nel Master
-        # 4. Sfondi (Non supportati direttamente in lettura blob da python-pptx, ma proviamo)
-
-        scan_targets = [slide.shapes, layout.shapes, master.shapes]
-        
-        for shapes in scan_targets:
+        targets = [slide.shapes, slide.slide_layout.shapes, slide.slide_layout.slide_master.shapes]
+        for collection in targets:
             if first_image: break
-            for shape in shapes:
+            for shape in collection:
                 blob = try_get_image_from_shape(shape)
-                if blob:
+                if blob: 
                     first_image = blob
                     break
-        
-        # Se ancora nulla, è probabile che sia un BACKGROUND FILL.
-        # Python-pptx ha limiti nell'estrarre il BLOB di un background fill.
-        # Se siamo qui e first_image è None, l'immagine è blindata nel background style.
-        # Non possiamo estrarla facilmente senza corrompere il file.
-        
+                    
     return "\n".join(full_text), first_image
 
 def get_gemini_plan_and_prompts(text, model_name):
-    if len(text) < 20:
-        st.session_state.errors.append("⚠️ Testo insufficiente nel PPT.")
+    # 1. Controllo testo vuoto
+    if len(text) < 10:
+        st.session_state.errors.append("⚠️ Il file PPT non contiene testo leggibile.")
         return None
 
     try:
-        model = genai.GenerativeModel(model_name)
+        # 2. Configurazione Safety (DISABILITA FILTRI)
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
+        
+        model = genai.GenerativeModel(model_name, safety_settings=safety_settings)
+        
         prompt = f"""
-        Sei Grimmy. Analizza: "{text[:3000]}"...
-        Output JSON:
+        Sei Grimmy. Analizza questo testo corporate ({len(text)} chars): 
+        "{text[:4000]}"
+        
+        Output JSON valido:
         {{
-            "slides": [ {{"layout": "Cover_Main", "title": "...", "body": "..."}} ],
-            "cover_prompt_a": "Corporate photo...",
-            "cover_prompt_b": "Creative 3d render..."
+            "slides": [ {{"layout": "Cover_Main", "title": "TITOLO", "body": "..."}} ],
+            "cover_prompt_a": "Photo of corporate team building, cooking class, high quality...",
+            "cover_prompt_b": "Abstract illustration of teamwork, cooking ingredients, 3d render..."
         }}
         """
+        
         resp = model.generate_content(prompt)
-        cleaned = re.sub(r"```json|```", "", resp.text).strip()
-        return json.loads(cleaned)
+        
+        # 3. Estrazione JSON Robusta
+        raw_text = resp.text
+        # Cerca la prima { e l'ultima }
+        start = raw_text.find('{')
+        end = raw_text.rfind('}') + 1
+        
+        if start != -1 and end != -1:
+            json_str = raw_text[start:end]
+            return json.loads(json_str)
+        else:
+            st.session_state.errors.append(f"❌ Gemini ha risposto ma senza JSON: {raw_text[:100]}...")
+            return None
+
     except Exception as e:
-        st.session_state.errors.append(f"❌ Errore Gemini: {e}")
+        st.session_state.errors.append(f"❌ Errore Gemini ({model_name}): {str(e)}")
         return None
 
 def generate_imagen_image(prompt, model_name):
@@ -169,7 +159,7 @@ def generate_imagen_image(prompt, model_name):
             res.images[0].save(buf, format='PNG')
             return buf.getvalue()
     except Exception as e:
-        st.session_state.errors.append(f"❌ Errore Imagen: {e}")
+        st.session_state.errors.append(f"❌ Errore NanoBanana: {e}")
         return None
 
 def create_final_pptx(plan, cover_image_bytes, template_path):
@@ -182,10 +172,10 @@ def create_final_pptx(plan, cover_image_bytes, template_path):
     cover_layout = layout_map.get("Cover_Main", prs.slide_master_layouts[0])
     slide = prs.slides.add_slide(cover_layout)
     
-    if plan and 'slides' in plan:
-        c_data = next((s for s in plan['slides'] if s['layout'] == 'Cover_Main'), None)
-        if c_data and slide.shapes.title: slide.shapes.title.text = c_data.get('title', '')
-    
+    if plan:
+        c_data = next((s for s in plan.get('slides', []) if s['layout'] == 'Cover_Main'), None)
+        if c_data and slide.shapes.title: slide.shapes.title.text = c_data.get('title', 'Team Building')
+
     if cover_image_bytes:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
             tmp.write(cover_image_bytes); tmp_path = tmp.name
@@ -198,22 +188,22 @@ def create_final_pptx(plan, cover_image_bytes, template_path):
         except: pass
         os.remove(tmp_path)
 
-    # ALTRE SLIDE (Semplificato)
+    # ALTRE SLIDE
     if plan:
         for s_data in plan.get('slides', []):
             if s_data['layout'] == 'Cover_Main': continue
             l_name = s_data.get('layout', 'Intro_Concept')
-            if l_name not in layout_map: l_name = list(layout_map.keys())[1]
-            
-            s = prs.slides.add_slide(layout_map[l_name])
-            if s.shapes.title: s.shapes.title.text = s_data.get('title', '')
-            for ph in s.placeholders:
-                if ph.placeholder_format.idx == 1: ph.text = s_data.get('body', '')
+            if l_name not in layout_map: l_name = "Intro_Concept" # Fallback
+            if l_name in layout_map:
+                s = prs.slides.add_slide(layout_map[l_name])
+                if s.shapes.title: s.shapes.title.text = s_data.get('title', '')
+                for ph in s.placeholders:
+                    if ph.placeholder_format.idx == 1: ph.text = s_data.get('body', '')
 
     return prs
 
-# --- MAIN UI ---
-st.title("🕵️ Grimmy PPT Agent (Forensic Mode)")
+# --- UI MAIN ---
+st.title("🛡️ Grimmy PPT Agent (Bulletproof)")
 
 if "step" not in st.session_state: st.session_state.step = 1
 if "data" not in st.session_state: st.session_state.data = {}
@@ -223,45 +213,68 @@ if st.session_state.step == 1:
     source = st.file_uploader("Carica Vecchio PPT", type=["pptx"])
     if st.button("Analizza") and template and source:
         st.session_state.errors = []
-        with st.spinner("Analisi profonda..."):
+        with st.spinner("Grimmy sta lavorando..."):
+            # Files
             with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as t:
                 t.write(template.getvalue()); st.session_state.data['tpl_path'] = t.name
             with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as s:
                 s.write(source.getvalue()); st.session_state.data['src_path'] = s.name
             
-            # ESTRAZIONE
+            # 1. Extract
             txt, orig = extract_content(st.session_state.data['src_path'])
-            st.session_state.data['orig_img'] = orig
+            st.session_state.data['orig_img'] = orig # Sarà probabilmente il logo
             
-            if not orig:
-                st.warning("⚠️ Ancora nessuna immagine. Probabilmente è un 'Background Fill' bloccato. Procedo comunque con la generazione AI.")
-            
-            # AI
+            # 2. Plan (Gemini)
             plan = get_gemini_plan_and_prompts(txt, selected_text_model)
             st.session_state.data['plan'] = plan
             
+            # 3. Images (NanoBanana) - SOLO SE IL PIANO ESISTE
             if plan:
                 st.session_state.data['img_a'] = generate_imagen_image(plan.get('cover_prompt_a'), selected_image_model)
                 st.session_state.data['img_b'] = generate_imagen_image(plan.get('cover_prompt_b'), selected_image_model)
+            else:
+                st.error("Gemini non ha restituito un piano valido. Controlla gli errori sopra.")
             
             st.session_state.step = 2
             st.rerun()
 
 elif st.session_state.step == 2:
     if st.session_state.errors:
-        st.error("Errori:"); 
+        st.error("Errori Tecnici Rilevati:")
         for e in st.session_state.errors: st.write(e)
     
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.write("Originale")
-        if st.session_state.data.get('orig_img'): st.image(st.session_state.data['orig_img'])
-        else: st.info("Non trovata (Usa AI)")
-    with c2:
-        st.write("Corporate")
-        if st.session_state.data.get('img_a'): st.image(st.session_state.data['img_a'])
-    with c3:
-        st.write("Creativo")
-        if st.session_state.data.get('img_b'): st.image(st.session_state.data['img_b'])
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("### Originale")
+        if st.session_state.data.get('orig_img'): 
+            st.image(st.session_state.data['orig_img'], caption="Logo/Img Trovata")
+        else: st.info("Sfondo non estraibile (Usa AI)")
 
-    if st.button("Reset"): st.session_state.step = 1; st.rerun()
+    with col2:
+        st.markdown("### Corporate")
+        if st.session_state.data.get('img_a'): 
+            st.image(st.session_state.data['img_a'])
+            if st.button("Scegli Corporate"): selection = "A"
+        else: st.warning("Non generata")
+
+    with col3:
+        st.markdown("### Creativo")
+        if st.session_state.data.get('img_b'): 
+            st.image(st.session_state.data['img_b'])
+            if st.button("Scegli Creativo"): selection = "B"
+        else: st.warning("Non generata")
+
+    # Logica Selezione (semplificata per UI)
+    if 'selection' in locals():
+        final_img = None
+        if selection == "A": final_img = st.session_state.data.get('img_a')
+        elif selection == "B": final_img = st.session_state.data.get('img_b')
+        
+        new_prs = create_final_pptx(st.session_state.data['plan'], final_img, st.session_state.data['tpl_path'])
+        out_name = "Grimmy_Presentation.pptx"
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp:
+            new_prs.save(tmp.name)
+            with open(tmp.name, "rb") as f:
+                st.download_button("📥 SCARICA PPTX", f, out_name, type="primary")
+
+    if st.button("Ricomincia"): st.session_state.step = 1; st.rerun()
