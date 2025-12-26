@@ -1,93 +1,90 @@
 import streamlit as st
 import google.generativeai as genai
-import json
+from pptx import Presentation
+import io
+import importlib
+import page1
 
-def process(slide, context):
-    """
-    LOGICA ESCLUSIVA PER LA COVER (Pagina 1) - VERSIONE DEBUG VISIVO
-    """
-    st.divider()
-    st.markdown("### 🕵️‍♂️ DEBUG PAGE 1 (Cover)")
-    
-    # 1. VERIFICA CONTESTO
-    if not context or len(context) < 10:
-        st.error("❌ ERRORE CRITICO: Il testo estratto dal vecchio PPT è vuoto o troppo breve!")
-        return
-    else:
-        st.success(f"✅ Testo sorgente letto: {len(context)} caratteri.")
+# --- CONFIGURAZIONE E LOGIN ---
+st.set_page_config(page_title="Team Building AI - Gemini 3 Native", layout="wide")
 
-    # 2. CONFIGURAZIONE MODELLO
-    # Nota: Se il tuo account non ha accesso a 'gemini-3.0-pro', questo darà errore.
-    # Proviamo con una lista di priorità.
-    model_name = "gemini-1.5-pro" # Usiamo il 1.5 come base sicura per testare il flusso. Se funziona, cambieremo in 3.0.
-    
-    st.info(f"🤖 Tentativo connessione AI con modello: `{model_name}`...")
-    
+if 'auth' not in st.session_state: st.session_state['auth'] = False
+if not st.session_state['auth']:
+    pwd = st.sidebar.text_input("Password", type="password")
+    if st.sidebar.button("Login"):
+        if pwd == st.secrets["app_password"]: st.session_state['auth'] = True; st.rerun()
+    st.stop()
+
+# --- SETUP API E RECUPERO MODELLI DISPONIBILI ---
+try:
+    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+except:
+    st.error("ERRORE: Manca GOOGLE_API_KEY nei secrets."); st.stop()
+
+@st.cache_data(ttl=600) # Cache per non chiamare Google a ogni click
+def get_gemini_models():
+    """Chiede a Google quali modelli sono abilitati per questa API Key."""
     try:
-        model = genai.GenerativeModel(model_name)
-        
-        prompt = f"""
-        Sei un esperto di Marketing. 
-        Analizza questo testo e estrai i dati per la COPERTINA.
-        
-        Rispondi ESCLUSIVAMENTE con questo JSON:
-        {{
-            "format_name": "Nome esatto del format (copialo dal testo)",
-            "claim": "Slogan commerciale breve (max 6 parole)",
-            "imagen_prompt": "Descrizione immagine sfondo (in inglese)"
-        }}
-        
-        TESTO:
-        {context[:3000]} 
-        """
-        # (Taglio il contesto a 3000 caratteri per sicurezza in questo test)
-        
-        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-        data = json.loads(response.text)
-        st.success("✅ Gemini ha risposto! Dati generati:")
-        st.json(data) # Mostra a video il JSON per conferma
-        
+        model_list = []
+        for m in genai.list_models():
+            # Filtra solo i modelli che generano testo (Gemini)
+            if 'generateContent' in m.supported_generation_methods:
+                if "gemini" in m.name.lower():
+                    model_list.append(m.name)
+        model_list.sort(reverse=True) # Mette i numeri più alti in cima (es. 1.5 prima di 1.0)
+        return model_list
     except Exception as e:
-        st.error(f"❌ ERRORE CHIAMATA AI: {e}")
-        return # Si ferma qui se l'AI fallisce
+        st.error(f"Errore nel recupero modelli: {e}")
+        return ["models/gemini-1.5-pro"] # Fallback di emergenza
 
-    # 3. SCRITTURA NEL PPT (DIAGNOSTICA)
-    st.markdown("#### ✏️ Scrittura nel Template...")
-    
-    try:
-        # A. TITOLO
-        if slide.shapes.title:
-            old_title = slide.shapes.title.text
-            slide.shapes.title.text = data.get("format_name", "NOME NON TROVATO")
-            st.write(f"🔹 Titolo aggiornato: da `{old_title}` a `{slide.shapes.title.text}`")
-        else:
-            st.warning("⚠️ ATTENZIONE: Nessun 'Titolo Slide' standard trovato nel layout.")
+# --- SIDEBAR: SELEZIONE MODELLO ---
+st.sidebar.title("🧠 AI Brain Engine")
+available_models = get_gemini_models()
 
-        # B. CLAIM (CERCA TUTTI I SEGNAPOSTO)
-        st.write("🔎 Cerco segnaposto per il Claim...")
-        found_claim_spot = False
+# Logica intelligente: Cerca "gemini-3" o "preview" per metterlo di default
+default_idx = 0
+for i, m in enumerate(available_models):
+    if "gemini-3" in m or "preview" in m: # Priorità alla versione 3 o Preview
+        default_idx = i
+        break
+
+selected_model = st.sidebar.selectbox(
+    "Versione Gemini in uso:", 
+    available_models, 
+    index=default_idx
+)
+
+st.sidebar.success(f"Target: `{selected_model}`")
+
+# --- CORE LOGIC ---
+def get_context(ppt_file):
+    prs = Presentation(ppt_file)
+    text = []
+    for s in prs.slides:
+        text.append(" | ".join([shape.text for shape in s.shapes if hasattr(shape, "text")]))
+    return "\n".join(text)
+
+st.title("⚡ AI PPT Architect")
+
+col1, col2 = st.columns(2)
+with col1:
+    t_file = st.file_uploader("Template (10 pag)", type=['pptx'])
+with col2:
+    c_file = st.file_uploader("Contenuto (Vecchio PPT)", type=['pptx'])
+
+if t_file and c_file:
+    if st.button("🚀 ESEGUI PAGE 1 (Cover)"):
         
-        for i, shape in enumerate(slide.placeholders):
-            # Info di debug per ogni shape trovata
-            st.caption(f"Box {i}: idx={shape.placeholder_format.idx}, type={shape.placeholder_format.type}, ha_testo={shape.has_text_frame}")
-            
-            # Se è un testo e NON è il titolo, ci scriviamo il claim
-            if shape.has_text_frame and shape != slide.shapes.title:
-                shape.text = data.get("claim", "CLAIM DEFAULT")
-                st.write(f"✅ Claim scritto nel Box {i} (idx {shape.placeholder_format.idx})")
-                found_claim_spot = True
-                break # Ci fermiamo al primo trovato
+        # RICARICA MODULO per evitare cache vecchia
+        importlib.reload(page1) 
         
-        if not found_claim_spot:
-            st.error("❌ NON HO TROVATO NESSUN BOX DI TESTO PER IL CLAIM (a parte il titolo).")
-
-        # C. PROMPT IMMAGINE (NOTE)
-        if not slide.has_notes_slide:
-            slide.notes_slide = slide.part.presentation.slides._library.add_notes_slide(slide.part, slide.part.slide_layout)
-        slide.notes_slide.notes_text_frame.text = f"PROMPT: {data.get('imagen_prompt')}"
-        st.success("✅ Prompt salvato nelle note della slide.")
-
-    except Exception as e:
-        st.error(f"❌ Errore durante la scrittura nel PPT: {e}")
-
-    st.divider()
+        prs = Presentation(t_file)
+        full_text = get_context(c_file)
+        
+        # Passiamo il modello selezionato dalla tendina alla funzione di processo
+        page1.process(prs.slides[0], full_text, model_name=selected_model)
+        
+        out = io.BytesIO()
+        prs.save(out)
+        out.seek(0)
+        st.download_button("📥 Scarica PPT", out, "Page1_Gemini3.pptx")
