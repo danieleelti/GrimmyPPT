@@ -1,272 +1,199 @@
 import streamlit as st
 import google.generativeai as genai
 from pptx import Presentation
-from pptx.util import Inches
-from pptx.enum.shapes import MSO_SHAPE_TYPE
-import tempfile
+import io
 import json
-import os
-import time
-from io import BytesIO
 
-# --- 1. CONFIGURAZIONE COSTANTI ---
-# FORZATURA TOTALE SU GEMINI 3 COME RICHIESTO
-MODEL_TEXT_NAME = "gemini-3-pro-preview" 
-MODEL_IMAGE_NAME = "imagen-3.0-generate"
+# --- CONFIGURAZIONE PAGINA ---
+st.set_page_config(page_title="Team Building AI Agent", layout="wide")
 
-st.set_page_config(page_title="Grimmy G3", layout="wide", page_icon="🍌")
+# --- GESTIONE SICUREZZA E LOGIN ---
+def check_password():
+    """Ritorna True se l'utente è loggato correttamente."""
+    if st.session_state.get('password_correct', False):
+        return True
 
-# --- 2. AUTENTICAZIONE ---
-if "APP_PASSWORD" not in st.secrets:
-    st.error("⚠️ Manca la password nei secrets!")
-    st.stop()
-
-if "auth" not in st.session_state: st.session_state.auth = False
-
-if not st.session_state.auth:
-    pwd = st.text_input("Inserisci Password", type="password")
-    if st.button("Accedi"):
-        if pwd == st.secrets["APP_PASSWORD"]:
-            st.session_state.auth = True
+    password_placeholder = st.sidebar.empty()
+    pwd = password_placeholder.text_input("Password di Accesso", type="password")
+    
+    if st.sidebar.button("Accedi"):
+        if pwd == st.secrets["general"]["app_password"]:
+            st.session_state['password_correct'] = True
+            password_placeholder.empty()
             st.rerun()
         else:
-            st.error("Password errata")
+            st.error("Password non corretta")
+            return False
+    return False
+
+if not check_password():
     st.stop()
 
-# --- 3. SETUP API ---
-api_key = st.secrets.get("GOOGLE_API_KEY")
-if not api_key:
-    st.error("⚠️ Manca GOOGLE_API_KEY nei secrets!")
-    st.stop()
+# --- CONFIGURAZIONE AI ---
+GOOGLE_API_KEY = st.secrets["google"]["api_key"]
+genai.configure(api_key=GOOGLE_API_KEY)
 
-try:
-    genai.configure(api_key=api_key)
-except Exception as e:
-    st.error(f"Errore configurazione API: {e}")
-    st.stop()
+# DEFINIZIONE RIGIDA DELLE VERSIONI (TASSATIVO)
+GEMINI_VERSION = "gemini-3.0-pro" 
+IMAGEN_VERSION = "imagen-3.0"
 
-# --- 4. FUNZIONI DI LAVORO ---
+# --- SIDEBAR ---
+with st.sidebar:
+    st.title("🎛️ Control Panel")
+    st.success(f"🔐 Accesso Autorizzato")
+    
+    st.divider()
+    st.subheader("⚙️ AI Engine Specs")
+    st.info(f"🧠 Reasoning Model: **{GEMINI_VERSION}**")
+    st.info(f"🎨 Image Model Target: **{IMAGEN_VERSION}**")
+    
+    st.divider()
+    st.subheader("📂 Uploads")
+    template_file = st.file_uploader("1. Carica il PPT Template (Nuova Grafica)", type=['pptx'])
+    content_file = st.file_uploader("2. Carica il Vecchio PPT (Contenuti)", type=['pptx'])
 
-def extract_text_and_logo(ppt_file):
-    """Legge il testo e cerca un'immagine logo nella prima slide."""
-    prs = Presentation(ppt_file)
-    text_content = []
-    logo_blob = None
-
-    # Estrazione Testo
-    for slide in prs.slides:
+# --- FUNZIONI DI UTILITÀ ---
+def extract_text_from_pptx(pptx_file):
+    """Estrae tutto il testo da una presentazione per darlo in pasto a Gemini."""
+    prs = Presentation(pptx_file)
+    full_text = []
+    for i, slide in enumerate(prs.slides):
         slide_text = []
         for shape in slide.shapes:
-            if hasattr(shape, "text") and shape.text.strip():
-                slide_text.append(shape.text.strip())
-        if slide_text:
-            text_content.append(" | ".join(slide_text))
-            
-    # Estrazione Logo (Forensic Light)
-    try:
-        if len(prs.slides) > 0:
-            # Cerca nella slide 1
-            for shape in prs.slides[0].shapes:
-                if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                    logo_blob = shape.image.blob; break
-                # Cerca nei gruppi
-                if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-                    for s in shape.shapes:
-                        if s.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                            logo_blob = s.image.blob; break
-                    if logo_blob: break
-    except: pass 
+            if hasattr(shape, "text"):
+                slide_text.append(shape.text)
+        full_text.append(f"Slide {i+1}: " + " | ".join(slide_text))
+    return "\n".join(full_text)
 
-    return "\n".join(text_content), logo_blob
-
-def get_ai_plan(text_input):
-    """Chiede a Gemini 3 la struttura e i prompt."""
-    model = genai.GenerativeModel(MODEL_TEXT_NAME)
-    
-    prompt = f"""
-    Sei un Creative Director esperto in eventi.
-    ANALIZZA questo contenuto grezzo di un format di team building:
-    "{text_input[:7000]}"
-    
-    OBIETTIVO: Creare la struttura per una presentazione commerciale e ideare la copertina.
-    
-    OUTPUT RICHIESTO (Solo JSON valido):
-    {{
-        "slides": [
-            {{"layout": "Cover_Main", "title": "Titolo Accattivante", "body": "Sottotitolo"}},
-            {{"layout": "Intro_Concept", "title": "Il Concept", "body": "Una frase emozionale breve."}},
-            {{"layout": "Activity_Detail", "title": "Come Funziona", "body": "Elenco puntato passaggi chiave."}},
-            {{"layout": "Technical_Grid", "title": "Scheda Tecnica", "body": "Durata, pax, location."}}
-        ],
-        "prompt_corporate": "Descrizione dettagliata in INGLESE per una foto realistica, stile corporate, alta risoluzione...",
-        "prompt_creative": "Descrizione dettagliata in INGLESE per un'immagine astratta/artistica 3D, metaforica..."
-    }}
+def generate_ai_content(source_text):
+    """
+    Chiede a Gemini 3 di agire come esperto di Team Building.
+    Restituisce un JSON con i testi riadattati e i prompt per le immagini.
     """
     
+    system_instruction = """
+    Sei un esperto mondiale di Team Building e comunicazione aziendale. 
+    Il tuo compito è analizzare una vecchia presentazione e ristrutturarne i contenuti 
+    per un nuovo template moderno.
+    
+    DEVI restituire ESCLUSIVAMENTE un oggetto JSON con questa struttura:
+    {
+        "slides_content": [
+            {
+                "slide_number": 1,
+                "title": "Titolo accattivante rielaborato",
+                "body": "Testo riassunto e migliorato per massimizzare l'impatto...",
+                "imagen_3_prompts": [
+                    "Prompt 1 specifico per Imagen 3: fotorealistico, corporate, team building...",
+                    "Prompt 2 alternativo per Imagen 3: stile illustration, vibrante..."
+                ]
+            }
+            ... per tutte le slide necessarie
+        ],
+        "summary": "Breve spiegazione del ragionamento adottato"
+    }
+    """
+    
+    prompt = f"""
+    Ecco il contenuto grezzo della vecchia presentazione:
+    {source_text}
+    
+    Rielabora tutto il contenuto. Migliora il tono di voce (deve essere professionale ma energico).
+    Per ogni slide, crea anche 2 prompt ottimizzati specificamente per {IMAGEN_VERSION} 
+    che descrivano visivamente il concetto della slide.
+    """
+
+    model = genai.GenerativeModel(GEMINI_VERSION, system_instruction=system_instruction)
+    
+    # Configurazione per forzare l'output JSON
+    generation_config = genai.GenerationConfig(response_mime_type="application/json")
+    
     try:
-        response = model.generate_content(prompt)
-        # Pulizia JSON brutale
-        txt = response.text
-        start = txt.find('{')
-        end = txt.rfind('}') + 1
-        if start != -1 and end != -1:
-            return json.loads(txt[start:end])
-        else:
-            st.error(f"Gemini 3 ha risposto ma il JSON non è valido. Risposta parziale: {txt[:100]}...")
-            return None
+        response = model.generate_content(prompt, generation_config=generation_config)
+        return json.loads(response.text)
     except Exception as e:
-        st.error(f"Errore Gemini 3 ({MODEL_TEXT_NAME}): {e}")
+        st.error(f"Errore nella chiamata a Gemini 3: {e}")
         return None
 
-def generate_image(prompt):
-    """Chiama Imagen 3."""
-    try:
-        if not hasattr(genai, "ImageGenerationModel"):
-            st.error("ERRORE: Libreria google-generativeai vecchia. Aggiorna requirements.txt!")
-            return None
-            
-        model = genai.ImageGenerationModel(MODEL_IMAGE_NAME)
-        result = model.generate_images(
-            prompt=prompt + ", 4k, hyper-realistic, corporate event photography, no text",
-            number_of_images=1,
-            aspect_ratio="16:9",
-            person_generation="allow_adult"
-        )
-        if result.images:
-            buf = BytesIO()
-            result.images[0].save(buf, format="PNG")
-            return buf.getvalue()
-    except Exception as e:
-        st.error(f"Errore NanoBanana ({MODEL_IMAGE_NAME}): {e}")
-        return None
-
-def build_pptx(plan, cover_img_bytes, template_file):
-    """Assembla il PPT finale."""
+def fill_presentation(template_file, ai_data):
+    """Riempie il template con i dati generati da Gemini."""
     prs = Presentation(template_file)
-    prs.slide_width = Inches(13.333)
-    prs.slide_height = Inches(7.5)
     
-    layouts = {l.name: l for l in prs.slide_master_layouts}
+    # Nota: Questa logica è semplificata. In un caso reale, mapping slide-to-slide 
+    # richiede di sapere quanti placeholder ci sono nel template.
+    # Qui assumiamo che l'AI generi contenuto sequenziale che proviamo a inserire.
     
-    # 1. Slide Cover
-    cover_layout = layouts.get("Cover_Main", prs.slide_master_layouts[0])
-    slide = prs.slides.add_slide(cover_layout)
+    slides_data = ai_data.get("slides_content", [])
     
-    cover_data = next((s for s in plan['slides'] if s['layout']=='Cover_Main'), {})
-    if slide.shapes.title: 
-        slide.shapes.title.text = cover_data.get('title', 'Titolo')
-    
-    # Immagine Cover (Sfondo)
-    if cover_img_bytes:
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
-            tmp.write(cover_img_bytes)
-            tmp_path = tmp.name
-        try:
-            slide.shapes.add_picture(tmp_path, 0, 0, width=prs.slide_width)
-        except: pass
-        os.remove(tmp_path)
-        
-    # 2. Altre Slide
-    for s_data in plan['slides']:
-        if s_data['layout'] == 'Cover_Main': continue
-        
-        l_name = s_data.get('layout', 'Intro_Concept')
-        if l_name not in layouts: l_name = list(layouts.keys())[0] # Fallback
-        
-        slide = prs.slides.add_slide(layouts[l_name])
-        
-        if slide.shapes.title: 
-            slide.shapes.title.text = s_data.get('title', '')
+    for i, slide in enumerate(prs.slides):
+        if i >= len(slides_data):
+            break
             
-        for ph in slide.placeholders:
-            if ph.placeholder_format.idx == 1: 
-                ph.text = s_data.get('body', '')
-                
-    return prs
-
-# --- 5. INTERFACCIA UTENTE ---
-
-st.title(f"🍌 Grimmy (Powered by {MODEL_TEXT_NAME})")
-
-if "step" not in st.session_state: st.session_state.step = 1
-if "data" not in st.session_state: st.session_state.data = {}
-
-# STEP 1
-if st.session_state.step == 1:
-    st.header("1. Carica File")
-    col1, col2 = st.columns(2)
-    with col1: tpl = st.file_uploader("Template (.pptx)", type=["pptx"], key="tpl")
-    with col2: src = st.file_uploader("Vecchio PPT (.pptx)", type=["pptx"], key="src")
+        data = slides_data[i]
         
-    if st.button("Analizza con Gemini 3", type="primary"):
-        if tpl and src:
-            with st.spinner("Analisi in corso..."):
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as t:
-                    t.write(tpl.getvalue()); st.session_state.data['tpl_path'] = t.name
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as s:
-                    s.write(src.getvalue()); st.session_state.data['src_path'] = s.name
-                
-                txt, logo = extract_text_and_logo(st.session_state.data['src_path'])
-                st.session_state.data['logo'] = logo
-                
-                plan = get_ai_plan(txt)
-                if plan:
-                    st.session_state.data['plan'] = plan
-                    st.session_state.step = 2
-                    st.rerun()
-
-# STEP 2
-elif st.session_state.step == 2:
-    st.header("2. Direzione Creativa")
-    plan = st.session_state.data['plan']
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Corporate Prompt")
-        p_corp = st.text_area("P1", plan.get("prompt_corporate", ""), height=150)
-    with c2:
-        st.subheader("Creative Prompt")
-        p_creat = st.text_area("P2", plan.get("prompt_creative", ""), height=150)
-        
-    if st.button("🎨 Genera Immagini", type="primary"):
-        with st.spinner("NanoBanana sta lavorando..."):
-            st.session_state.data['img_corp'] = generate_image(p_corp)
-            st.session_state.data['img_creat'] = generate_image(p_creat)
-            st.session_state.step = 3
-            st.rerun()
-
-# STEP 3
-elif st.session_state.step == 3:
-    st.header("3. Risultato Finale")
-    c1, c2, c3 = st.columns(3)
-    choice = None
-    
-    with c1:
-        st.markdown("**Logo**")
-        if st.session_state.data.get('logo'):
-            st.image(st.session_state.data['logo'])
-            if st.button("Usa Logo"): choice = "logo"
-    with c2:
-        st.markdown("**Corporate**")
-        if st.session_state.data.get('img_corp'):
-            st.image(st.session_state.data['img_corp'])
-            if st.button("Scegli Corporate"): choice = "corp"
-    with c3:
-        st.markdown("**Creativo**")
-        if st.session_state.data.get('img_creat'):
-            st.image(st.session_state.data['img_creat'])
-            if st.button("Scegli Creativo"): choice = "creat"
+        # Cerca titolo e body placeholder
+        for shape in slide.shapes:
+            if not shape.has_text_frame:
+                continue
             
-    if choice:
-        img = None
-        if choice == "logo": img = st.session_state.data['logo']
-        elif choice == "corp": img = st.session_state.data['img_corp']
-        elif choice == "creat": img = st.session_state.data['img_creat']
-        
-        prs = build_pptx(st.session_state.data['plan'], img, st.session_state.data['tpl_path'])
-        out_name = "Grimmy_G3_Presentation.pptx"
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp:
-            prs.save(tmp.name)
-            with open(tmp.name, "rb") as f:
-                st.download_button("📥 SCARICA", f, out_name, type="primary")
+            # Semplice euristica: se è un titolo
+            if shape == slide.shapes.title:
+                shape.text = data.get("title", "")
+            else:
+                # Riempie il primo altro box di testo trovato con il corpo
+                # (Da raffinare in base al template specifico che caricherai)
+                if shape.text_frame.text == "BODY_PLACEHOLDER": # Esempio
+                     shape.text = data.get("body", "")
+                elif len(shape.text) > 0: # Sovrascrittura generica
+                     shape.text = data.get("body", "")
+                     
+    # Salvataggio in buffer
+    output = io.BytesIO()
+    prs.save(output)
+    output.seek(0)
+    return output
+
+# --- MAIN FLOW ---
+st.title("🚀 Gemini 3 Team Building Architect")
+st.markdown("Carica i file per avviare la rieditazione intelligente.")
+
+if template_file and content_file:
+    if st.button("✨ Avvia Processo AI (Gemini 3)"):
+        with st.spinner("Gemini 3 sta leggendo il vecchio PPT..."):
+            raw_text = extract_text_from_pptx(content_file)
+            
+        with st.spinner("Gemini 3 sta ragionando e creando i prompt per Imagen 3..."):
+            ai_response = generate_ai_content(raw_text)
+            
+        if ai_response:
+            # 1. Mostra il ragionamento e i Prompt
+            st.divider()
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                st.subheader("🧠 Ragionamento & Contenuti")
+                st.write(ai_response.get("summary"))
+                st.json(ai_response.get("slides_content"))
+            
+            with col2:
+                st.subheader("🎨 Prompt Generati per Imagen 3")
+                for slide in ai_response.get("slides_content", []):
+                    st.markdown(f"**Slide {slide['slide_number']}**")
+                    for p_idx, prompt in enumerate(slide['imagen_3_prompts']):
+                        st.code(prompt, language="text")
+                        # Qui potresti aggiungere una chiamata API reale a Imagen 3 se lo desideri
+            
+            # 2. Creazione File
+            with st.spinner("Generazione nuovo PPTx in corso..."):
+                new_ppt_buffer = fill_presentation(template_file, ai_response)
                 
-    if st.button("Ricomincia"): st.session_state.step = 1; st.rerun()
+            st.success("✅ Elaborazione completata!")
+            
+            st.download_button(
+                label="📥 Scarica Nuovo PPT",
+                data=new_ppt_buffer,
+                file_name="TeamBuilding_Gemini3_Remake.pptx",
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            )
+else:
+    st.info("Attesa caricamento file nella sidebar...")
