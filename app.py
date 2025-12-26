@@ -6,7 +6,7 @@ import importlib
 import page1
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Team Building AI - Full Control", layout="wide")
+st.set_page_config(page_title="Team Building AI - Next Gen", layout="wide")
 
 if 'auth' not in st.session_state: st.session_state['auth'] = False
 if not st.session_state['auth']:
@@ -21,57 +21,74 @@ try:
 except:
     st.error("ERRORE: Manca GOOGLE_API_KEY nei secrets."); st.stop()
 
-# --- FUNZIONI RECUPERO MODELLI ---
+# --- RECUPERO MODELLI DISPONIBILI ---
 @st.cache_data(ttl=600)
 def get_models_by_type():
-    """Recupera e divide i modelli disponibili in Testo (Gemini) e Immagini (Imagen)."""
+    """Divide i modelli in Testo (Gemini) e Immagini (Imagen)."""
     gemini_list = []
     imagen_list = []
     
     try:
         for m in genai.list_models():
-            # 1. Lista Gemini (Text Generation)
-            if 'generateContent' in m.supported_generation_methods:
-                if "gemini" in m.name.lower():
-                    gemini_list.append(m.name)
+            name = m.name
+            methods = m.supported_generation_methods
             
-            # 2. Lista Imagen (Image Generation)
-            # Cerchiamo modelli che hanno 'image' nel nome o supportano 'generateImage'
-            if "imagen" in m.name.lower() or 'generateImage' in m.supported_generation_methods:
-                imagen_list.append(m.name)
+            # GEMINI
+            if 'generateContent' in methods and "gemini" in name.lower():
+                gemini_list.append(name)
+            
+            # IMAGEN (Cerca 'generateImage' o 'image' nel nome)
+            if 'generateImage' in methods or "imagen" in name.lower():
+                imagen_list.append(name)
                 
     except Exception as e:
-        st.error(f"Errore recupero modelli API: {e}")
-        # Fallback manuale se l'API fallisce
-        return ["models/gemini-1.5-pro"], ["models/imagen-3.0-generate-001"]
+        st.error(f"Errore API Google: {e}")
+        return [], []
 
-    # Se la lista Imagen è vuota (capita con alcune chiavi), forziamo quella nota
-    if not imagen_list:
-        imagen_list = ["models/imagen-3.0-generate-001", "models/imagen-2.0"]
-        
     return gemini_list, imagen_list
 
-# --- SIDEBAR: SELEZIONE MODELLI ---
+# --- SIDEBAR: INTELLIGENCE SELECTION ---
 st.sidebar.header("🎛️ AI Engine Room")
 
 gemini_opts, imagen_opts = get_models_by_type()
 
-# 1. SELEZIONE GEMINI (Default: Gemini 3)
+# 1. SELEZIONE GEMINI (Cerca Gemini 3)
 st.sidebar.subheader("🧠 Cervello (Testo)")
-gemini_target = "models/gemini-3-pro-preview"
-gem_idx = gemini_opts.index(gemini_target) if gemini_target in gemini_opts else 0
+# Logica di default: Cerca "gemini-3", se non c'è prende il primo
+gem_idx = 0
+for i, m in enumerate(gemini_opts):
+    if "gemini-3" in m:
+        gem_idx = i
+        break
 selected_gemini = st.sidebar.selectbox("Modello Gemini:", gemini_opts, index=gem_idx)
 
-# 2. SELEZIONE IMAGEN (Default: Imagen 3)
+# 2. SELEZIONE IMAGEN (Priorità: Imagen 4 > Imagen 3)
 st.sidebar.subheader("🎨 Creativo (Immagini)")
-# Cerchiamo di selezionare Imagen 3 di default
 img_idx = 0
+found_priority = False
+
+# Cerca prima Imagen 4
 for i, m in enumerate(imagen_opts):
-    if "imagen-3" in m.lower():
+    if "imagen-4" in m:
         img_idx = i
+        found_priority = True
         break
 
+# Se non trova il 4, cerca Imagen 3
+if not found_priority:
+    for i, m in enumerate(imagen_opts):
+        if "imagen-3" in m:
+            img_idx = i
+            break
+
 selected_imagen = st.sidebar.selectbox("Modello Imagen:", imagen_opts, index=img_idx)
+
+# Feedback visivo
+st.sidebar.divider()
+if "imagen-4" in selected_imagen:
+    st.sidebar.success("🚀 WOW! Imagen 4 Attivo!")
+elif "imagen-3" in selected_imagen:
+    st.sidebar.success("✅ Imagen 3 Attivo")
 
 # --- CORE LOGIC ---
 def get_context(ppt_file):
@@ -82,7 +99,7 @@ def get_context(ppt_file):
     return "\n".join(text)
 
 st.title("⚡ AI PPT Architect")
-st.info(f"Configurazione Attiva: **{selected_gemini}** + **{selected_imagen}**")
+st.caption(f"Engine: **{selected_gemini}** + **{selected_imagen}**")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -98,7 +115,7 @@ if t_file and c_file:
         prs = Presentation(t_file)
         full_text = get_context(c_file)
         
-        # Passiamo ENTRAMBI i modelli selezionati
+        # Passiamo i modelli selezionati
         page1.process(
             slide=prs.slides[0], 
             context=full_text, 
@@ -109,4 +126,4 @@ if t_file and c_file:
         out = io.BytesIO()
         prs.save(out)
         out.seek(0)
-        st.download_button("📥 Scarica PPT", out, "Page1_AutoImage.pptx")
+        st.download_button("📥 Scarica PPT", out, "Page1_Imagen4.pptx")
