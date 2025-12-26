@@ -5,67 +5,71 @@ import requests
 import io
 from pptx.util import Inches
 
-def generate_image_with_imagen(prompt, api_key):
+def generate_image_with_imagen(prompt, api_key, model_name):
     """
-    Chiama direttamente l'API REST di Imagen 3 per generare l'immagine.
-    Restituisce i bytes dell'immagine o None se fallisce.
+    Chiama l'API usando il modello specifico selezionato nel menu a tendina.
     """
-    # Endpoint ufficiale per Imagen 3 su Gemini API
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key={api_key}"
+    # Pulizia nome modello per URL (l'API vuole 'models/nome' o solo 'nome' a seconda dell'endpoint, 
+    # ma solitamente l'endpoint v1beta accetta models/imagen-...)
+    
+    # Se il modello selezionato non ha il prefisso 'models/', glielo aggiungiamo per sicurezza nella URL
+    if not model_name.startswith("models/"):
+        model_name = f"models/{model_name}"
+        
+    url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:predict?key={api_key}"
     
     headers = {"Content-Type": "application/json"}
     data = {
         "instances": [{"prompt": prompt}],
         "parameters": {
-            "aspectRatio": "16:9", # Formato slide standard
+            "aspectRatio": "16:9", 
             "sampleCount": 1
         }
     }
     
     try:
         response = requests.post(url, headers=headers, json=data)
-        response.raise_for_status() # Lancia errore se c'è un codice 4xx/5xx
+        response.raise_for_status() 
         
         result = response.json()
-        # L'immagine arriva in base64, dobbiamo decodificarla
         if "predictions" in result:
             import base64
             b64_data = result["predictions"][0]["bytesBase64Encoded"]
             return base64.b64decode(b64_data)
         else:
-            st.error(f"Errore struttura risposta Imagen: {result}")
+            st.error(f"Errore risposta Imagen: {result}")
             return None
             
     except Exception as e:
-        st.error(f"Errore chiamata Imagen 3: {e}")
+        st.error(f"Errore chiamata a {model_name}: {e}")
         return None
 
-def process(slide, context, model_name):
+def process(slide, context, gemini_model, imagen_model):
     """
-    LOGICA PAGE 1 - COVER COMPLETA
-    Genera Testi E Immagine fisica.
+    LOGICA PAGE 1
+    Riceve i nomi dei due modelli dalle tendine.
     """
     st.divider()
-    st.markdown(f"### 🎨 AVVIO CREAZIONE COVER (Testi + Immagine Reale)")
+    st.markdown(f"### 🎨 AVVIO COVER")
+    st.caption(f"Brain: `{gemini_model}` | Painter: `{imagen_model}`")
     
-    # Recupera API Key dai secrets (necessaria per la chiamata REST immagine)
     api_key = st.secrets["GOOGLE_API_KEY"]
 
-    # 1. Configurazione Modello Testuale
+    # 1. Configurazione Modello Testo
     try:
-        model = genai.GenerativeModel(model_name)
+        model = genai.GenerativeModel(gemini_model)
     except Exception as e:
-        st.error(f"❌ Errore modello testo: {e}")
+        st.error(f"❌ Errore caricamento {gemini_model}: {e}")
         return
 
-    # 2. Prompt per i Contenuti
+    # 2. Prompt Testuale
     prompt_text = f"""
-    Sei un Art Director e Copywriter. Stiamo facendo la COVER.
+    Sei un Art Director.
     
     COMPITI:
     1. Estrai il NOME DEL FORMAT (esatto).
     2. Crea un CLAIM (Slogan) commerciale.
-    3. Scrivi un PROMPT VISIVO per Imagen 3 (in inglese, dettagliato, fotorealistico, wide shot).
+    3. Scrivi un PROMPT VISIVO in inglese per la copertina.
 
     RISPONDI SOLO JSON:
     {{
@@ -78,67 +82,53 @@ def process(slide, context, model_name):
     {context[:4000]}
     """
     
-    st.info("1️⃣ Generazione Testi e Prompt Visivo in corso...")
+    st.info("1️⃣ Generazione Testi in corso...")
     
     try:
-        # Generazione Testi
         res_text = model.generate_content(prompt_text, generation_config={"response_mime_type": "application/json"})
         data = json.loads(res_text.text)
         st.success("✅ Testi generati.")
         
-        # --- SCRITTURA TESTI NEL PPT ---
-        # A. Titolo
+        # Scrittura Testi
         if slide.shapes.title:
             slide.shapes.title.text = data.get("format_name", "")
         else:
-            # Fallback titolo
             for s in slide.placeholders:
                 if s.has_text_frame: 
                     s.text = data.get("format_name", "")
                     break
         
-        # B. Claim (Sottotitolo)
         for s in slide.placeholders:
             if s.has_text_frame and s != slide.shapes.title and s.text != data.get("format_name", ""):
                 s.text = data.get("claim", "")
                 break
         
-        # --- GENERAZIONE E INSERIMENTO IMMAGINE ---
+        # 3. Generazione Immagine (Usa il modello passato come parametro)
         img_prompt = data.get("imagen_prompt")
         if img_prompt:
-            st.info(f"2️⃣ Generazione Immagine con Imagen 3...\nPrompt: *{img_prompt}*")
+            st.info(f"2️⃣ Generazione Immagine con **{imagen_model}**...")
             
-            # Chiamata alla funzione immagine
-            img_bytes = generate_image_with_imagen(img_prompt, api_key)
+            img_bytes = generate_image_with_imagen(img_prompt, api_key, imagen_model)
             
             if img_bytes:
-                st.success("✅ Immagine creata! Inserimento nella slide...")
+                st.success("✅ Immagine creata! Inserimento...")
                 
-                # Cerca il placeholder immagine
-                # I placeholder immagine in PPTX hanno tipo 18 (PICTURE) o sono generici
                 inserted = False
                 for shape in slide.placeholders:
-                    # Verifica se è un placeholder immagine (tipo 18) o generico oggetto (tipo 7)
-                    # p.s. idx varia a seconda del template, cerchiamo un placeholder vuoto che non sia titolo/testo
-                    if shape.placeholder_format.type in [18, 7]: # 18=Picture, 7=Body/Object
+                    if shape.placeholder_format.type in [18, 7]: 
                         try:
-                            # Inserisce l'immagine dallo stream di byte
                             image_stream = io.BytesIO(img_bytes)
                             shape.insert_picture(image_stream)
-                            st.success(f"🖼️ Immagine inserita nel placeholder {shape.placeholder_format.idx}")
                             inserted = True
                             break
-                        except Exception as e_ins:
-                            st.warning(f"Impossibile inserire nel placeholder {shape.name}: {e_ins}")
+                        except: pass
                 
                 if not inserted:
-                    st.warning("⚠️ Nessun placeholder 'Immagine' specifico trovato. Provo a mettere l'immagine sullo sfondo.")
-                    # Fallback: aggiungi immagine come shape libera se non trova il placeholder
                     image_stream = io.BytesIO(img_bytes)
-                    slide.shapes.add_picture(image_stream, Inches(0), Inches(0), height=Inches(7.5)) # Adatta altezza slide
+                    slide.shapes.add_picture(image_stream, Inches(0), Inches(0), height=Inches(7.5))
 
             else:
-                st.error("❌ Generazione immagine fallita (nessun byte ricevuto).")
+                st.error("❌ Generazione immagine fallita.")
         
     except Exception as e:
-        st.error(f"❌ ERRORE CRITICO PAGE 1: {e}")
+        st.error(f"❌ ERRORE CRITICO: {e}")
