@@ -29,9 +29,7 @@ def analyze_content(context, gemini_model):
 # --- FUNZIONE 2: GENERAZIONE IMMAGINE (Imagen) ---
 def generate_image_with_imagen(prompt, api_key, model_name):
     """Chiama l'API di Imagen per generare l'immagine dal prompt."""
-    # Gestione nome modello
     if not model_name.startswith("models/"): model_name = f"models/{model_name}"
-    
     url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:predict?key={api_key}"
     headers = {"Content-Type": "application/json"}
     data = {"instances": [{"prompt": prompt}], "parameters": {"aspectRatio": "16:9", "sampleCount": 1}}
@@ -48,73 +46,62 @@ def generate_image_with_imagen(prompt, api_key, model_name):
         st.error(f"Errore Imagen: {e}")
         return None
 
-# --- FUNZIONE 3: INSERIMENTO NEL PPT (FIX SCHEMA DIAPOSITIVA) ---
+# --- FUNZIONE 3: INSERIMENTO NEL PPT (FIX DEFINITIVO) ---
 def insert_content_into_ppt(slide, data, img_bytes):
     """
-    Inserisce testi nella slide e l'immagine DIRETTAMENTE NEL LAYOUT (Schema).
+    Inserisce l'immagine nella Slide alle coordinate dello Schema e la manda in fondo.
     """
     try:
-        # 1. INSERIMENTO TESTI (Nella slide normale)
-        # Titolo
+        # 1. INSERIMENTO TESTI
         if slide.shapes.title: 
             slide.shapes.title.text = data.get("format_name", "")
         else:
-            # Fallback se non trova il titolo standard
             for s in slide.placeholders:
-                if s.has_text_frame: 
-                    s.text = data.get("format_name", "")
-                    break
+                if s.has_text_frame: s.text = data.get("format_name", ""); break
         
-        # Claim
         for s in slide.placeholders:
             if s.has_text_frame and s != slide.shapes.title and s.text != data.get("format_name", ""):
-                s.text = data.get("claim", "")
-                break
+                s.text = data.get("claim", ""); break
         
-        # 2. INSERIMENTO IMMAGINE NEL LAYOUT (SCHEMA)
+        # 2. GESTIONE IMMAGINE (GEOMETRIA SCHEMA + Z-ORDER)
         if img_bytes:
-            # Recuperiamo lo schema (layout) usato da questa slide
+            # Recuperiamo il Layout (Schema) per leggere DOVE deve andare l'immagine
             layout = slide.slide_layout
             target_placeholder = None
             
-            # Cerchiamo il placeholder immagine nello SCHEMA per prenderne le coordinate
+            # Cerchiamo il placeholder nello schema
             for shape in layout.placeholders:
-                # Tipo 18 (Picture) o 7 (Object/Body)
-                if shape.placeholder_format.type in [18, 7]:
+                if shape.placeholder_format.type in [18, 7]: # Picture o Object
                     target_placeholder = shape
                     break
             
             image_stream = io.BytesIO(img_bytes)
             
             if target_placeholder:
-                # PRENDIAMO LE COORDINATE DEL SEGNAPOSTO
+                # A. COPIAMO LE COORDINATE DALLO SCHEMA
                 left = target_placeholder.left
                 top = target_placeholder.top
                 width = target_placeholder.width
                 height = target_placeholder.height
                 
-                # AGGIUNGIAMO L'IMMAGINE ALLO SCHEMA (Come forma semplice, non nel placeholder)
-                # Questo risolve l'errore "LayoutPlaceholder object has no attribute insert_picture"
-                pic = layout.shapes.add_picture(image_stream, left, top, width, height)
+                # B. INSERIAMO NELLA SLIDE (NON NEL LAYOUT)
+                # Questo evita l'errore 'LayoutShapes object has no attribute add_picture'
+                pic = slide.shapes.add_picture(image_stream, left, top, width, height)
                 
-                # (Opzionale) Spostiamo l'immagine indietro nello stack XML dello schema 
-                # per evitare che copra altri elementi fissi dello schema
-                # Sposta l'elemento immagine all'inizio della lista delle shape
+                # C. SPOSTIAMO IN SECONDO PIANO (Send to Back)
+                # Spostiamo l'elemento XML all'inizio della lista shapes (indice 0 = sfondo)
                 try:
-                    layout.shapes._spTree.remove(pic._element)
-                    layout.shapes._spTree.insert(2, pic._element) # Indice 2 per non rompere lo sfondo base
-                except:
-                    pass # Se fallisce lo spostamento livello, rimane dove è (spesso va bene comunque)
-
+                    slide.shapes._spTree.remove(pic._element)
+                    slide.shapes._spTree.insert(0, pic._element)
+                except Exception as e:
+                    st.warning(f"Z-Order non applicato perfettamente: {e}")
+                    
             else:
-                st.warning("⚠️ Segnaposto immagine non trovato nello Schema. Aggiungo l'immagine come sfondo a pagina intera nello Schema.")
-                # Fallback: Immagine a tutto schermo nel layout
-                pic = layout.shapes.add_picture(image_stream, Inches(0), Inches(0), height=Inches(7.5))
-                # Sposta indietro
-                try:
-                    layout.shapes._spTree.remove(pic._element)
-                    layout.shapes._spTree.insert(2, pic._element)
-                except: pass
+                st.warning("⚠️ Segnaposto non trovato nello schema. Inserisco a tutto schermo come sfondo.")
+                # Fallback: A tutto schermo e manda in fondo
+                pic = slide.shapes.add_picture(image_stream, Inches(0), Inches(0), height=Inches(7.5))
+                slide.shapes._spTree.remove(pic._element)
+                slide.shapes._spTree.insert(0, pic._element)
 
         return True
     except Exception as e:
