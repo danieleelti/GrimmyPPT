@@ -40,42 +40,30 @@ except KeyError:
 
 
 # --- FUNZIONE RECUPERO MODELLI DISPONIBILI ---
-@st.cache_data(ttl=3600) # Cache per un'ora per non chiamare l'API ogni secondo
+@st.cache_data(ttl=3600) 
 def get_available_models():
     """
-    Interroga Google per sapere quali modelli sono ATTIVAMENTE disponibili
-    per questa API Key.
+    Interroga Google per sapere quali modelli sono ATTIVAMENTE disponibili.
     """
     gemini_options = []
     imagen_options = []
     
     try:
-        # Recupera la lista dei modelli
         for m in genai.list_models():
-            # Filtra per modelli generativi di testo (Gemini)
             if 'generateContent' in m.supported_generation_methods:
                 gemini_options.append(m.name)
             
-            # Nota: Imagen a volte non appare in list_models standard SDK a seconda dell'accesso,
-            # ma se appare, ha metodi specifici o nomi specifici.
-            # Per sicurezza, aggiungiamo i noti se l'API non li esplicita, 
-            # ma controlliamo prima se l'API li restituisce.
             if 'image' in m.name.lower() or 'generateImage' in m.supported_generation_methods:
                 imagen_options.append(m.name)
                 
     except Exception as e:
         st.error(f"Impossibile recuperare la lista modelli: {e}")
-        # Fallback manuale se l'API fallisce il listing
         return ["models/gemini-1.5-pro", "models/gemini-1.0-pro"], ["imagen-3.0"]
 
-    # Se la lista imagen è vuota (comune con l'SDK standard), forziamo le stringhe note
-    # per permettere all'utente di provare comunque a chiamarle.
     if not imagen_options:
         imagen_options = ["imagen-3.0-generate-001", "imagen-3.0", "imagen-2.0"]
         
-    # Ordiniamo in ordine inverso (solitamente i più nuovi hanno numeri più alti)
     gemini_options.sort(reverse=True)
-    
     return gemini_options, imagen_options
 
 def find_best_default(options, target_keyword):
@@ -83,38 +71,31 @@ def find_best_default(options, target_keyword):
     for index, name in enumerate(options):
         if target_keyword in name.lower():
             return index
-    return 0 # Se non trova la versione specifica, torna il primo della lista (il più recente)
+    return 0 
 
 # --- SIDEBAR E SELEZIONE MODELLI ---
 gemini_list, imagen_list = get_available_models()
 
-# Calcolo indici di default
-gemini_default_index = find_best_default(gemini_list, "gemini-3") # Cerca Gemini 3
-imagen_default_index = find_best_default(imagen_list, "3") # Cerca Imagen 3
+gemini_default_index = find_best_default(gemini_list, "gemini-3")
+imagen_default_index = find_best_default(imagen_list, "3")
 
 with st.sidebar:
     st.title("🎛️ Control Panel")
-    st.success(f"🔐 Accesso Autorizzato")
     
     st.divider()
     st.subheader("🧠 Scelta Cervello (LLM)")
-    
     selected_gemini_model = st.selectbox(
         "Versione Gemini", 
         gemini_list, 
-        index=gemini_default_index,
-        help="Seleziona il modello di ragionamento. Gemini 3 è pre-selezionato se disponibile."
+        index=gemini_default_index
     )
     
     st.subheader("🎨 Scelta Creativo (Image Gen)")
     selected_imagen_model = st.selectbox(
         "Versione Imagen (Target Prompt)", 
         imagen_list, 
-        index=imagen_default_index,
-        help="L'AI scriverà i prompt ottimizzati per questa versione."
+        index=imagen_default_index
     )
-    
-    st.info(f"Stai usando: **{selected_gemini_model}**")
     
     st.divider()
     st.subheader("📂 Uploads")
@@ -138,7 +119,6 @@ def generate_ai_content(source_text, model_name, imagen_target):
     """
     Logica Core AI.
     """
-    
     system_instruction = f"""
     Sei un esperto mondiale di Team Building e comunicazione aziendale. 
     Il tuo compito è analizzare una vecchia presentazione e ristrutturarne i contenuti 
@@ -169,10 +149,7 @@ def generate_ai_content(source_text, model_name, imagen_target):
     Crea prompt ottimizzati specificamente per il modello di immagini: {imagen_target}.
     """
 
-    # Utilizza il modello selezionato dinamicamente
     model = genai.GenerativeModel(model_name, system_instruction=system_instruction)
-    
-    # Configurazione JSON
     generation_config = genai.GenerationConfig(response_mime_type="application/json")
     
     try:
@@ -194,16 +171,12 @@ def fill_presentation(template_file, ai_data):
         for shape in slide.shapes:
             if not shape.has_text_frame: continue
             
-            # Gestione Titolo
             if shape == slide.shapes.title:
                 shape.text = data.get("title", "")
                 continue
 
-            # Gestione Corpo (Cerca placeholder o testo esistente)
             if len(shape.text) > 0 or "PLACEHOLDER" in shape.text_frame.text.upper(): 
                  shape.text = data.get("body", "")
-                 # Se vuoi riempire solo UNO shape per slide come body, scommenta il break sotto
-                 # break 
                      
     output = io.BytesIO()
     prs.save(output)
@@ -217,37 +190,32 @@ st.markdown("Carica i file, seleziona i motori AI e genera la nuova presentazion
 if template_file and content_file:
     if st.button("✨ Avvia Processo AI"):
         
-        # 1. Estrazione
         with st.spinner("Lettura del vecchio PPT..."):
             raw_text = extract_text_from_pptx(content_file)
             
-        # 2. Generazione AI (Con i modelli scelti)
-        with st.spinner(f"Elaborazione con {selected_gemini_model} (Target Img: {selected_imagen_model})..."):
+        with st.spinner(f"Elaborazione con {selected_gemini_model}..."):
             ai_response = generate_ai_content(raw_text, selected_gemini_model, selected_imagen_model)
             
         if ai_response:
             st.divider()
             col1, col2 = st.columns([1, 1])
             
-            # Colonna 1: Testi e Ragionamento
             with col1:
                 st.subheader("🧠 Ragionamento AI")
                 st.info(ai_response.get("summary"))
                 st.subheader("📝 Contenuti Generati")
                 st.json(ai_response.get("slides_content"))
             
-            # Colonna 2: Prompt Immagini
             with col2:
                 st.subheader(f"🎨 Prompt per {selected_imagen_model}")
                 for slide in ai_response.get("slides_content", []):
                     st.markdown(f"**Slide {slide['slide_number']}**")
-                    prompts = slide.get('imagen_prompts', []) # Gestione sicura chiave
-                    if not prompts and 'imagen_3_prompts' in slide: prompts = slide['imagen_3_prompts'] # Fallback retrocompatibilità
+                    prompts = slide.get('imagen_prompts', [])
+                    if not prompts and 'imagen_3_prompts' in slide: prompts = slide['imagen_3_prompts']
                     
                     for prompt in prompts:
                         st.code(prompt, language="text")
             
-            # 3. Creazione File
             with st.spinner("Creazione file PPTx finale..."):
                 new_ppt_buffer = fill_presentation(template_file, ai_response)
                 
