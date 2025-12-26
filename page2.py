@@ -3,7 +3,7 @@ import google.generativeai as genai
 import json
 import requests
 import io
-from pptx.util import Inches
+from pptx.util import Inches, Pt
 
 # --- 1. ANALISI TESTO (Scenario Emozionale) ---
 def analyze_content(context, gemini_model):
@@ -34,12 +34,9 @@ def analyze_content(context, gemini_model):
 
 # --- 2. GENERAZIONE IMMAGINE ---
 def generate_image(prompt, api_key, model_name):
-    # Gestione nome modello
     if not model_name.startswith("models/"): model_name = f"models/{model_name}"
-    
     url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:predict?key={api_key}"
     headers = {"Content-Type": "application/json"}
-    # Usiamo 16:9 per lo sfondo a tutto schermo
     data = {"instances": [{"prompt": prompt}], "parameters": {"aspectRatio": "16:9", "sampleCount": 1}}
     
     try:
@@ -54,39 +51,74 @@ def generate_image(prompt, api_key, model_name):
         st.error(f"Errore Imagen Page 2: {e}")
         return None
 
-# --- 3. INSERIMENTO NELLA SLIDE (Sfondo Full Page + Testo) ---
+# --- 3. INSERIMENTO NELLA SLIDE (Logica "Search & Rescue") ---
 def insert_into_slide(slide, data, img_bytes):
     try:
-        # A. TITOLO
+        # A. TITOLO (Cerca shape Titolo o usa la prima shape in alto con testo)
         if slide.shapes.title:
             slide.shapes.title.text = data.get("format_name", "")
         
-        # B. TESTO EMOZIONALE (Placeholder Corsivo)
-        # Cerchiamo i placeholder di testo. Nel tuo screenshot c'è un grosso box "Edit text".
-        # Escludiamo il titolo.
-        text_placeholders = [s for s in slide.placeholders if s.has_text_frame and s != slide.shapes.title]
+        # B. TESTO EMOZIONALE (Caccia al Tesoro)
+        target_shape = None
+        candidates = []
         
-        if text_placeholders:
-            # Il primo placeholder trovato sarà quello del testo emozionale
-            # Nota: Assegnare .text mantiene il font del paragrafo se il placeholder è ben fatto,
-            # ma resetta le formattazioni locali. Poiché il tuo template ha il corsivo nello stile, dovrebbe funzionare.
-            text_placeholders[0].text = data.get("emotional_text", "")
+        # 1. Cerca nei Placeholders ufficiali (escludendo il titolo)
+        for shape in slide.placeholders:
+            if shape.has_text_frame and shape != slide.shapes.title:
+                candidates.append(shape)
+        
+        # 2. Se vuoto, cerca in TUTTE le Shapes (es. box di testo statici nel layout)
+        if not candidates:
+            # Cerchiamo shape che hanno testo e non sono il titolo
+            for shape in slide.shapes:
+                if shape.has_text_frame and shape != slide.shapes.title:
+                    # Filtro anti-rumore: Ignoriamo cose minuscole (es. numeri pagina)
+                    if shape.width > Inches(2) and shape.height > Inches(0.5):
+                        candidates.append(shape)
+
+        # 3. Selezione del Vincitore
+        if candidates:
+            # Prendiamo il box PIÙ GRANDE (per area), assumendo che sia il corpo del testo
+            target_shape = max(candidates, key=lambda s: s.width * s.height)
             
+            # Scrittura
+            tf = target_shape.text_frame
+            tf.clear() # Pulisce "Edit Text"
+            p = tf.paragraphs[0]
+            p.text = data.get("emotional_text", "")
+            # Nota: Manteniamo la formattazione originale del template (corsivo, font, ecc.)
+            st.toast(f"Testo inserito in un box esistente (Area: {int(target_shape.width*target_shape.height)})", icon="✅")
+        
+        else:
+            # 4. ULTIMO FALLBACK: CREAZIONE MANUALE
+            # Se non esiste nessun box, ne creiamo uno noi bello grande
+            st.warning("⚠️ Nessun box di testo trovato nel template. Ne creo uno nuovo.")
+            left = Inches(1)
+            top = Inches(2)
+            width = Inches(10)
+            height = Inches(3)
+            textbox = slide.shapes.add_textbox(left, top, width, height)
+            p = textbox.text_frame.add_paragraph()
+            p.text = data.get("emotional_text", "")
+            p.font.size = Pt(24) # Font leggibile
+            p.font.italic = True # Forziamo il corsivo richiesto
+            
+            target_shape = textbox # Per riferimento Z-Order dopo
+
         # C. IMMAGINE DI SFONDO (Z-Order Fix)
         if img_bytes:
             image_stream = io.BytesIO(img_bytes)
             
-            # 1. Inserisci a tutto schermo (copre tutto inizialmente)
-            # Dimensioni standard PPT 16:9 = 13.333 x 7.5 pollici
+            # Inserisci a tutto schermo
             pic = slide.shapes.add_picture(image_stream, Inches(0), Inches(0), width=Inches(13.333), height=Inches(7.5))
             
-            # 2. Sposta DIETRO (Send to Back)
-            # Indice 2: Subito dopo le proprietà della slide, ma prima di Titoli e Testi (che solitamente sono indici più alti)
+            # Sposta DIETRO (Send to Back)
             try:
                 slide.shapes._spTree.remove(pic._element)
+                # Indice 2 è solitamente sicuro per stare dietro al testo ma non rompere il file
                 slide.shapes._spTree.insert(2, pic._element)
-            except Exception as e:
-                st.warning(f"Impossibile spostare lo sfondo in secondo piano: {e}")
+            except Exception:
+                pass
 
         return True
     except Exception as e:
