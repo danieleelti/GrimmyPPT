@@ -3,17 +3,15 @@ import google.generativeai as genai
 import json
 import requests
 import io
-from pptx.util import Inches
-from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+from pptx.util import Inches, Pt
 
-# --- 1. ANALISI TESTO ---
 def analyze_content(context, gemini_model):
     try:
         model = genai.GenerativeModel(gemini_model)
         prompt_text = f"""
         Sei un Art Director. COMPITI:
         1. NOME FORMAT: Estrailo ESATTO dal testo.
-        2. CLAIM: Crea uno slogan commerciale potente.
+        2. CLAIM: Crea uno slogan commerciale potente (max 10 parole).
         3. PROMPT IMMAGINE: Scrivi un prompt DETTAGLIATO in inglese per una copertina FOTOREALISTICA.
 
         RISPONDI SOLO JSON: {{"format_name": "...", "claim": "...", "imagen_prompt": "..."}}
@@ -26,7 +24,6 @@ def analyze_content(context, gemini_model):
         st.error(f"Errore Analisi Gemini: {e}")
         return None
 
-# --- 2. GENERAZIONE IMMAGINE ---
 def generate_image_with_imagen(prompt, api_key, model_name):
     if not model_name.startswith("models/"): model_name = f"models/{model_name}"
     url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:predict?key={api_key}"
@@ -45,65 +42,79 @@ def generate_image_with_imagen(prompt, api_key, model_name):
         st.error(f"Errore Imagen: {e}")
         return None
 
-# --- 3. INSERIMENTO NEL PPT (FIX TESTI + Z-ORDER) ---
 def insert_content_into_ppt(slide, data, img_bytes):
     try:
-        # A. INSERIMENTO TESTI (Logica Robusta per Posizione)
-        # 1. Titolo Principale (Cerca shape Titolo o usa il primo placeholder in alto)
-        if slide.shapes.title:
-            slide.shapes.title.text = data.get("format_name", "")
-        
-        # 2. Claim (Sottotitolo)
-        # Raccogliamo tutti i placeholder di testo che NON sono il titolo
-        text_placeholders = [s for s in slide.placeholders if s.has_text_frame and s != slide.shapes.title]
-        # Li ordiniamo dall'alto verso il basso (così il primo sotto il titolo è sicuramente il claim)
-        text_placeholders.sort(key=lambda x: x.top)
-        
-        if text_placeholders:
-            # Scriviamo il Claim nel primo box disponibile sotto il titolo
-            text_placeholders[0].text = data.get("claim", "")
-
-        # B. INSERIMENTO IMMAGINE (Chirurgia Layout + Fallback Sicuro)
+        # 1. INSERIMENTO IMMAGINE (SFONDO)
+        # La inseriamo PRIMA di tutto, così sta sotto.
         if img_bytes:
-            layout = slide.slide_layout
             image_stream = io.BytesIO(img_bytes)
-            
-            # Coordinate target (cerca nel layout o usa full screen)
-            target_left, target_top = Inches(0), Inches(0)
-            target_width, target_height = Inches(13.333), Inches(7.5)
-            
-            for shape in layout.placeholders:
-                if shape.placeholder_format.type in [18, 7]: # Picture or Body
-                    target_left, target_top = shape.left, shape.top
-                    target_width, target_height = shape.width, shape.height
-                    break
-
-            # 1. Aggiungi alla SLIDE (temporaneamente o definitivamente)
-            pic = slide.shapes.add_picture(image_stream, target_left, target_top, target_width, target_height)
-            
-            # 2. Tentativo di Spostamento nel LAYOUT (Sfondo Fisso)
-            moved_to_layout = False
+            pic = slide.shapes.add_picture(image_stream, Inches(0), Inches(0), width=Inches(13.333), height=Inches(7.5))
+            # Spostiamo indietro (livello 1) per sicurezza
             try:
-                rId_slide = pic.element.blipFill.blip.embed
-                image_part = slide.part.related_part(rId_slide)
-                rId_layout = layout.part.relate_to(image_part, RT.IMAGE)
-                pic.element.blipFill.blip.embed = rId_layout
-                
-                # Sposta XML da Slide a Layout
-                slide.shapes._spTree.remove(pic.element)
-                layout.shapes._spTree.insert(2, pic.element) # Indice 2 = Sfondo Layout
-                moved_to_layout = True
-            except Exception:
-                # Se la chirurgia fallisce, l'immagine è ancora sulla Slide (ma sopra il testo!)
-                moved_to_layout = False
+                slide.shapes._spTree.remove(pic._element)
+                slide.shapes._spTree.insert(1, pic._element)
+            except: pass
 
-            # 3. Fallback: Se è rimasta sulla Slide, la mandiamo IN FONDO (Dietro al testo)
-            if not moved_to_layout:
-                try:
-                    slide.shapes._spTree.remove(pic.element)
-                    slide.shapes._spTree.insert(2, pic.element) # Indice 2 = Sfondo Slide (Dietro i testi)
-                except:
-                    pass
+        # 2. SOSTITUZIONE TESTI (METODO "TROVA E SOSTITUISCI")
+        # Invece di cercare il placeholder per tipo, cerchiamo TUTTI i box di testo
+        # e vediamo qual è il titolo e quale il claim in base alla posizione.
+        
+        shapes_with_text = []
+        for shape in slide.shapes:
+            if shape.has_text_frame and shape.text.strip() != "":
+                shapes_with_text.append(shape)
+        
+        # Ordiniamo per altezza (Y): Quello più in alto è il titolo, quello sotto è il claim
+        shapes_with_text.sort(key=lambda x: x.top)
+        
+        title_written = False
+        claim_written = False
+        
+        # A. TITOLO (Il primo in alto o quello che si chiama Title)
+        if slide.shapes.title:
+            target = slide.shapes.title
+        elif len(shapes_with_text) > 0:
+            target = shapes_with_text[0]
+        else:
+            target = None
+
+        if target:
+            # PORTA IN PRIMO PIANO
+            slide.shapes._spTree.remove(target.element)
+            slide.shapes._spTree.append(target.element)
+            # SCRIVI
+            target.text_frame.paragraphs[0].text = data.get("format_name", "FORMAT NAME")
+            title_written = True
+        
+        # B. CLAIM (Il secondo in alto, o quello che contiene "Subtitle")
+        claim_target = None
+        
+        # Cerchiamo un candidato valido per il claim
+        for shape in shapes_with_text:
+            if shape == target: continue # Salta il titolo già usato
+            # Se troviamo un box che sembra un sottotitolo
+            claim_target = shape
+            break # Prendiamo il primo disponibile sotto il titolo
+            
+        if claim_target:
+             # PORTA IN PRIMO PIANO
+            slide.shapes._spTree.remove(claim_target.element)
+            slide.shapes._spTree.append(claim_target.element)
+            # SCRIVI
+            claim_target.text_frame.paragraphs[0].text = data.get("claim", "CLAIM")
+            claim_written = True
+        
+        # Se non abbiamo trovato dove scrivere, creiamo box nuovi (Extrema Ratio)
+        if not title_written:
+            tb = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(10), Inches(2))
+            tb.text_frame.text = data.get("format_name", "")
+            tb.text_frame.paragraphs[0].font.size = Pt(50)
+            tb.text_frame.paragraphs[0].font.bold = True
+            
+        if not claim_written:
+            tb = slide.shapes.add_textbox(Inches(1), Inches(4), Inches(10), Inches(1))
+            tb.text_frame.text = data.get("claim", "")
+            tb.text_frame.paragraphs[0].font.size = Pt(24)
 
         return True
     except Exception as e:
