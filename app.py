@@ -2,16 +2,38 @@ import streamlit as st
 import google.generativeai as genai
 from pptx import Presentation
 import io
-import importlib
+import sys
+import os
 
-# --- IMPORTIAMO LA LOGICA DELLE PAGINE ---
-# Nota: Devi creare una cartella chiamata "logic" e mettere i file lì dentro
-from logic import page1_cover, page2_generic
+# --- CORREZIONE PERCORSO (Il trucco per far vedere la cartella logic) ---
+# Questo dice a Python: "Guarda anche nella cartella dove si trova questo file app.py"
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
 
-# --- CONFIGURAZIONE ---
+# Ora l'import funzionerà sicuramente
+try:
+    from logic import page1_cover, page2_generic
+except ImportError as e:
+    st.error(f"Errore critico di importazione: {e}")
+    st.stop()
+
+# --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Team Building AI Architect", layout="wide")
 
-# Recupero Secrets
+# --- LOGIN ---
+if 'auth' not in st.session_state: st.session_state['auth'] = False
+def check_login():
+    if st.session_state['auth']: return True
+    pwd = st.sidebar.text_input("Password", type="password")
+    if st.sidebar.button("Login"):
+        if pwd == st.secrets["app_password"]: 
+            st.session_state['auth'] = True
+            st.rerun()
+    return False
+
+if not check_login(): st.stop()
+
+# --- SETUP GOOGLE ---
 try:
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=GOOGLE_API_KEY)
@@ -19,17 +41,8 @@ except KeyError:
     st.error("ERRORE: Manca GOOGLE_API_KEY nei secrets.")
     st.stop()
 
-# Login veloce (semplificato per brevità)
-if 'auth' not in st.session_state: st.session_state['auth'] = False
-if not st.session_state['auth']:
-    pwd = st.sidebar.text_input("Password", type="password")
-    if st.sidebar.button("Login"):
-        if pwd == st.secrets["app_password"]: st.session_state['auth'] = True; st.rerun()
-    st.stop()
-
-# --- FUNZIONI DI SUPPORTO ---
+# --- UTILITY CONTESTO ---
 def extract_full_context(ppt_file):
-    """Estrae TUTTO il testo dal vecchio PPT per dare contesto a Gemini."""
     prs = Presentation(ppt_file)
     full_text = []
     for i, slide in enumerate(prs.slides):
@@ -38,8 +51,8 @@ def extract_full_context(ppt_file):
     return "\n\n".join(full_text)
 
 # --- INTERFACCIA ---
-st.title("🚀 Team Building AI Architect - Modular System")
-st.markdown("Sistema a moduli: ogni pagina ha il suo cervello dedicato.")
+st.title("🚀 Team Building AI Architect")
+st.success("✅ Moduli Logic Agganciati Correttamente")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -47,51 +60,49 @@ with col1:
 with col2:
     source_file = st.file_uploader("📄 Carica Vecchio PPT (Source)", type=['pptx'])
 
-# --- ESECUZIONE ---
 if template_file and source_file:
-    if st.button("✨ ESEGUI TUTTO (Pagine 1-10)"):
+    if st.button("✨ Avvia Elaborazione Modulare"):
         
-        # 1. Preparazione
-        status = st.status("Inizializzazione...", expanded=True)
         prs = Presentation(template_file)
+        status = st.status("Inizio elaborazione...", expanded=True)
         
-        status.write("📖 Lettura contesto dal vecchio PPT...")
+        # 1. Lettura Contesto
+        status.write("📖 Lettura PPT Sorgente...")
         full_context = extract_full_context(source_file)
         
-        # 2. Elaborazione Modulare
-        # Qui chiamiamo i file specifici per ogni pagina
-        
-        # --- PAGINA 1: COVER ---
-        status.write("🎨 Elaborazione Pagina 1: Cover...")
+        # 2. Elaborazione Pagina 1 (Cover)
+        status.write("🎨 Elaborazione Slide 1: Cover...")
         try:
-            # Passiamo la slide[0], il contesto e l'API key (o il modello configurato)
+            # Chiama la logica specifica per la cover
             page1_cover.process_slide(prs.slides[0], full_context)
         except Exception as e:
-            st.error(f"Errore su Pagina 1: {e}")
+            st.error(f"Errore nella Cover: {e}")
 
-        # --- PAGINA 2: INTRODUZIONE / DETTAGLI ---
-        status.write("📝 Elaborazione Pagina 2: Intro/Dettagli...")
+        # 3. Elaborazione Pagina 2 (Introduzione/Dettagli)
+        # Qui usiamo page2_generic. Se in futuro vorrai una logica diversa per la pag 2
+        # creerai un file 'page2_intro.py' e cambierai qui la chiamata.
+        status.write("📝 Elaborazione Slide 2: Introduzione...")
         try:
-            # Usiamo un file dedicato. Se la pag 3 è diversa, creerai page3.py
-            page2_generic.process_slide(prs.slides[1], full_context, slide_type="Introduzione")
+            if len(prs.slides) > 1:
+                page2_generic.process_slide(prs.slides[1], full_context, slide_type="Introduzione al Format")
         except Exception as e:
-            st.error(f"Errore su Pagina 2: {e}")
-            
-        # --- PAGINA 3... 10 ---
-        # Per ora usiamo il generico per la pagina 3 come esempio, 
-        # ma tu creerai page3_timeline.py, page4_tech.py etc.
-        status.write("📝 Elaborazione Pagina 3: Esempio Generico...")
+            st.error(f"Errore nella Pagina 2: {e}")
+
+        # 4. Elaborazione Pagina 3 (Es. Obiettivi) - Usiamo il generico come placeholder
+        status.write("🎯 Elaborazione Slide 3: Obiettivi...")
         try:
-            page2_generic.process_slide(prs.slides[2], full_context, slide_type="Dettagli Tecnici")
-        except IndexError:
-            st.warning("Il template ha meno di 3 pagine, salto.")
+            if len(prs.slides) > 2:
+                page2_generic.process_slide(prs.slides[2], full_context, slide_type="Obiettivi Formativi")
+        except Exception as e:
+            st.error(f"Errore nella Pagina 3: {e}")
+
+        # ... (Il flusso continua per le altre pagine)
 
         status.update(label="✅ Elaborazione Completata!", state="complete", expanded=False)
         
-        # 3. Download
+        # Salvataggio
         out = io.BytesIO()
         prs.save(out)
         out.seek(0)
         
-        st.success("Tutte le pagine sono state processate secondo i moduli specifici.")
-        st.download_button("📥 Scarica PPT Completato", out, "AI_Remake_Full.pptx")
+        st.download_button("📥 Scarica PPT Finale", out, "AI_Remake_Modular.pptx")
