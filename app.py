@@ -17,6 +17,7 @@ def check_password():
     pwd = password_placeholder.text_input("Password di Accesso", type="password")
     
     if st.sidebar.button("Accedi"):
+        # CORREZIONE: Accesso diretto alla chiave 'app_password' senza sezioni
         if pwd == st.secrets["app_password"]:
             st.session_state['password_correct'] = True
             password_placeholder.empty()
@@ -30,10 +31,16 @@ if not check_password():
     st.stop()
 
 # --- CONFIGURAZIONE AI ---
-GOOGLE_API_KEY = st.secrets["api_key"]
-genai.configure(api_key=GOOGLE_API_KEY)
+# CORREZIONE: Accesso diretto alla chiave 'GOOGLE_API_KEY' senza sezioni
+try:
+    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+    genai.configure(api_key=GOOGLE_API_KEY)
+except KeyError:
+    st.error("Errore: Chiave 'GOOGLE_API_KEY' non trovata nei secrets.")
+    st.stop()
 
 # DEFINIZIONE RIGIDA DELLE VERSIONI (TASSATIVO)
+# Nota: Assicurati che il tuo account Google Cloud sia abilitato per questi modelli specifici
 GEMINI_VERSION = "gemini-3.0-pro" 
 IMAGEN_VERSION = "imagen-3.0"
 
@@ -112,16 +119,12 @@ def generate_ai_content(source_text):
         response = model.generate_content(prompt, generation_config=generation_config)
         return json.loads(response.text)
     except Exception as e:
-        st.error(f"Errore nella chiamata a Gemini 3: {e}")
+        st.error(f"Errore nella chiamata a Gemini ({GEMINI_VERSION}): {e}")
         return None
 
 def fill_presentation(template_file, ai_data):
     """Riempie il template con i dati generati da Gemini."""
     prs = Presentation(template_file)
-    
-    # Nota: Questa logica è semplificata. In un caso reale, mapping slide-to-slide 
-    # richiede di sapere quanti placeholder ci sono nel template.
-    # Qui assumiamo che l'AI generi contenuto sequenziale che proviamo a inserire.
     
     slides_data = ai_data.get("slides_content", [])
     
@@ -132,20 +135,24 @@ def fill_presentation(template_file, ai_data):
         data = slides_data[i]
         
         # Cerca titolo e body placeholder
+        # Logica: Cerca il titolo, poi cerca il primo shape che contiene testo 
+        # (che non sia il titolo) per metterci il body.
         for shape in slide.shapes:
             if not shape.has_text_frame:
                 continue
             
-            # Semplice euristica: se è un titolo
+            # Gestione Titolo
             if shape == slide.shapes.title:
                 shape.text = data.get("title", "")
-            else:
-                # Riempie il primo altro box di testo trovato con il corpo
-                # (Da raffinare in base al template specifico che caricherai)
-                if shape.text_frame.text == "BODY_PLACEHOLDER": # Esempio
-                     shape.text = data.get("body", "")
-                elif len(shape.text) > 0: # Sovrascrittura generica
-                     shape.text = data.get("body", "")
+                continue
+
+            # Gestione Corpo del testo (sovrascrive il testo esistente nel template)
+            # Qui cerchiamo il primo box di testo disponibile che non sia il titolo
+            if len(shape.text) > 0 or shape.text_frame.text == "BODY_PLACEHOLDER": 
+                 shape.text = data.get("body", "")
+                 # Una volta riempito un body, passiamo alla prossima shape o slide 
+                 # (rimuovere il break se ci sono più box da riempire)
+                 # break 
                      
     # Salvataggio in buffer
     output = io.BytesIO()
@@ -181,7 +188,6 @@ if template_file and content_file:
                     st.markdown(f"**Slide {slide['slide_number']}**")
                     for p_idx, prompt in enumerate(slide['imagen_3_prompts']):
                         st.code(prompt, language="text")
-                        # Qui potresti aggiungere una chiamata API reale a Imagen 3 se lo desideri
             
             # 2. Creazione File
             with st.spinner("Generazione nuovo PPTx in corso..."):
