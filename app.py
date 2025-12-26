@@ -34,16 +34,20 @@ if not api_key:
 if api_key:
     genai.configure(api_key=api_key)
 
-# --- SIDEBAR SEMPLIFICATA ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ Configurazione")
     
-    # FORZATURA GEMINI 3 (Come richiesto)
-    st.success("🧠 Cervello: Gemini 3 Pro (Active)")
-    selected_text_model = "gemini-3-pro-preview" # Forzato hardcoded
+    # SELEZIONE FORZATA GEMINI 3
+    st.markdown("### 🧠 Cervello")
+    # Qui definisco solo modelli di nuova generazione
+    text_models = ["gemini-3-pro-preview", "gemini-2.0-flash-exp", "gemini-1.5-pro"]
+    selected_text_model = st.selectbox("Modello Testo", text_models, index=0)
     
-    st.info("🎨 NanoBanana: Imagen 3")
-    selected_image_model = "imagen-3.0-generate"
+    st.markdown("### 🎨 NanoBanana")
+    # Modelli Imagen
+    img_models = ["imagen-3.0-generate", "imagen-3.0-generate-001"]
+    selected_image_model = st.selectbox("Modello Immagini", img_models, index=0)
 
     st.markdown("---")
     template = st.file_uploader("Carica Template Master", type=["pptx"])
@@ -55,7 +59,7 @@ def extract_content(file_path):
     full_text = []
     first_image = None
     
-    # Testo
+    # Estrazione Testo
     for slide in prs.slides:
         txt = []
         for shape in slide.shapes:
@@ -63,7 +67,7 @@ def extract_content(file_path):
                 txt.append(shape.text.strip())
         if txt: full_text.append(" | ".join(txt))
         
-    # Immagine (Logo/Extra)
+    # Estrazione Immagine (Tentativo su Slide e Gruppi)
     try:
         if len(prs.slides) > 0:
             for shape in prs.slides[0].shapes:
@@ -78,40 +82,60 @@ def extract_content(file_path):
     
     return "\n".join(full_text), first_image
 
-def get_gemini_plan(text):
-    # Prompt per Gemini 3
+def get_gemini_plan(text, model_name):
+    # Safety Settings: Nessun blocco
+    safety = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    ]
+
     prompt = f"""
-    You are an Elite Creative Director.
-    ANALYZE this event format content: "{text[:6000]}"
+    You are an Elite Creative Director for Corporate Events.
+    ANALYZE this event content: "{text[:6000]}"
     
-    TASK 1: Structure the slides mapping content to: Cover_Main, Intro_Concept, Activity_Detail, Technical_Grid, Logistics_Info.
-    TASK 2: Write 2 PHOTOREALISTIC IMAGE PROMPTS for the Cover Background.
+    TASK 1: Structure the content for these layouts: Cover_Main, Intro_Concept, Activity_Detail, Technical_Grid, Logistics_Info.
+    TASK 2: Write 2 HIGH-END IMAGE PROMPTS for the Cover Background (NanoBanana).
+    
+    GUIDELINES FOR PROMPTS:
+    - Contextualized to the specific activity (e.g. if cooking -> kitchen, ingredients).
+    - Style: 4K, Photorealistic, Professional, Depth of Field, Cinematic Lighting.
+    - No text in the image.
     
     Output JSON ONLY:
     {{
         "slides": [ {{"layout": "Cover_Main", "title": "...", "body": "..."}} ],
-        "cover_prompt_a": "High-end corporate photography of [activity]...",
-        "cover_prompt_b": "Cinematic abstract composition representing [theme]..."
+        "cover_prompt_a": "Prompt describing a professional corporate scene...",
+        "cover_prompt_b": "Prompt describing a creative/abstract metaphorical scene..."
     }}
     """
     try:
-        model = genai.GenerativeModel(selected_text_model)
+        model = genai.GenerativeModel(model_name, safety_settings=safety)
         resp = model.generate_content(prompt)
-        # Pulizia JSON aggressiva
+        
+        # Pulizia JSON
         raw = resp.text
         start, end = raw.find('{'), raw.rfind('}') + 1
         if start != -1 and end != -1:
             return json.loads(raw[start:end])
+        else:
+            st.error(f"Errore formato JSON da Gemini: {raw[:100]}...")
+            return None
     except Exception as e:
-        st.error(f"Errore Gemini 3: {e}")
-    return None
+        st.error(f"Errore Chiamata Gemini ({model_name}): {e}")
+        return None
 
-def generate_image(prompt):
+def generate_image(prompt, model_name):
     try:
-        # Questo è il punto che falliva: ora con requirements aggiornato funzionerà
-        model = genai.ImageGenerationModel(selected_image_model)
+        # Controllo libreria
+        if not hasattr(genai, "ImageGenerationModel"):
+            st.error("⚠️ ERRORE LIBRERIA: `google-generativeai` è vecchia. Devi aggiornare requirements.txt e riavviare l'app!")
+            return None
+
+        model = genai.ImageGenerationModel(model_name)
         res = model.generate_images(
-            prompt=prompt + ", 4k, photorealistic, highly detailed, corporate style",
+            prompt=prompt + ", 4k, photorealistic, highly detailed, corporate event style, no text",
             number_of_images=1,
             aspect_ratio="16:9",
             person_generation="allow_adult"
@@ -121,7 +145,7 @@ def generate_image(prompt):
             res.images[0].save(buf, format="PNG")
             return buf.getvalue()
     except Exception as e:
-        st.error(f"Errore NanoBanana: {e}")
+        st.error(f"Errore NanoBanana ({model_name}): {e}")
         return None
 
 def create_pptx(plan, cover_img, tpl_path):
@@ -134,18 +158,20 @@ def create_pptx(plan, cover_img, tpl_path):
     c_data = next((s for s in plan.get('slides',[]) if s['layout']=='Cover_Main'), {})
     if slide.shapes.title: slide.shapes.title.text = c_data.get('title', 'Event')
     
-    # Immagine di sfondo
+    # Immagine Sfondo
     if cover_img:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
             tmp.write(cover_img); tmp_path = tmp.name
         try:
-            slide.shapes.add_picture(tmp_path, 0, 0, width=prs.slide_width)
-            # Sposta l'immagine dietro (send to back simulato riaggiungendo titolo se necessario, 
-            # ma pptx lo mette in cima allo stack. Workaround: titolo sopra)
+            # Inserisce immagine a tutto schermo
+            pic = slide.shapes.add_picture(tmp_path, 0, 0, width=prs.slide_width)
+            # Sposta l'immagine dietro (Hack: taglia e incolla gli altri elementi sopra? 
+            # PPTX mette l'ultimo aggiunto sopra. 
+            # Qui ci affidiamo al layout: se il placeholder è "sopra" nel master, il testo sarà sopra)
         except: pass
         os.remove(tmp_path)
     
-    # Altre slide (semplificato)
+    # Altre slide
     for s_data in plan.get('slides', []):
         if s_data['layout'] == 'Cover_Main': continue
         l_name = s_data.get('layout', 'Intro_Concept')
@@ -159,7 +185,7 @@ def create_pptx(plan, cover_img, tpl_path):
 
 # --- INTERFACCIA ---
 
-st.title("🍌 Grimmy PPT Agent (Gemini 3 Powered)")
+st.title("🍌 Grimmy: Human-in-the-Loop")
 
 if "step" not in st.session_state: st.session_state.step = 1
 if "data" not in st.session_state: st.session_state.data = {}
@@ -177,7 +203,7 @@ if st.session_state.step == 1:
             txt, orig = extract_content(st.session_state.data['src'])
             st.session_state.data['orig'] = orig
             
-            plan = get_gemini_plan(txt)
+            plan = get_gemini_plan(txt, selected_text_model)
             if plan:
                 st.session_state.data['plan'] = plan
                 st.session_state.step = 2
@@ -185,19 +211,23 @@ if st.session_state.step == 1:
 
 # STEP 2: REVISIONE PROMPT
 elif st.session_state.step == 2:
-    st.header("🎨 Direzione Creativa")
+    st.header("🎨 Direzione Creativa (Prompt Review)")
+    st.info(f"Gemini 3 ha scritto questi prompt. Modificali se vuoi.")
+    
     plan = st.session_state.data['plan']
     
     c1, c2 = st.columns(2)
     with c1:
-        pa = st.text_area("Prompt Corporate", plan.get('cover_prompt_a',''), height=150)
+        st.subheader("Prompt A (Corporate)")
+        pa = st.text_area("Descrizione", plan.get('cover_prompt_a',''), height=150, key="pa")
     with c2:
-        pb = st.text_area("Prompt Creativo", plan.get('cover_prompt_b',''), height=150)
+        st.subheader("Prompt B (Creativo)")
+        pb = st.text_area("Descrizione", plan.get('cover_prompt_b',''), height=150, key="pb")
         
-    if st.button("Genera Immagini (NanoBanana)"):
-        with st.spinner("Generazione 4K..."):
-            st.session_state.data['img_a'] = generate_image(pa)
-            st.session_state.data['img_b'] = generate_image(pb)
+    if st.button("🎨 Genera Immagini (NanoBanana)"):
+        with st.spinner("Generazione 4K in corso..."):
+            st.session_state.data['img_a'] = generate_image(pa, selected_image_model)
+            st.session_state.data['img_b'] = generate_image(pb, selected_image_model)
             st.session_state.step = 3
             st.rerun()
 
@@ -208,17 +238,21 @@ elif st.session_state.step == 3:
     sel = None
     
     with c1:
-        st.caption("Originale (Logo)")
+        st.caption("Originale")
         if st.session_state.data.get('orig'): 
             st.image(st.session_state.data['orig'])
-            if st.button("Usa Logo"): sel = "orig"
+            if st.button("Usa Logo/Originale"): sel = "orig"
+        else: st.write("Nessuna immagine")
+            
     with c2:
-        st.caption("Corporate")
+        st.caption("NanoBanana A")
         if st.session_state.data.get('img_a'): 
             st.image(st.session_state.data['img_a'])
             if st.button("Scegli A"): sel = "A"
+        else: st.error("Errore Gen A")
+            
     with c3:
-        st.caption("Creativo")
+        st.caption("NanoBanana B")
         if st.session_state.data.get('img_b'): 
             st.image(st.session_state.data['img_b'])
             if st.button("Scegli B"): sel = "B"
