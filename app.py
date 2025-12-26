@@ -17,7 +17,6 @@ def check_password():
     pwd = password_placeholder.text_input("Password di Accesso", type="password")
     
     if st.sidebar.button("Accedi"):
-        # Accesso diretto alla chiave 'app_password' (struttura flat)
         if pwd == st.secrets["app_password"]:
             st.session_state['password_correct'] = True
             password_placeholder.empty()
@@ -38,13 +37,10 @@ except KeyError:
     st.error("Errore Critico: Chiave 'GOOGLE_API_KEY' non trovata nei secrets.")
     st.stop()
 
-
 # --- FUNZIONE RECUPERO MODELLI DISPONIBILI ---
 @st.cache_data(ttl=3600) 
 def get_available_models():
-    """
-    Interroga Google per sapere quali modelli sono ATTIVAMENTE disponibili.
-    """
+    """Recupera i modelli disponibili filtrando per Gemini e Imagen."""
     gemini_options = []
     imagen_options = []
     
@@ -57,8 +53,8 @@ def get_available_models():
                 imagen_options.append(m.name)
                 
     except Exception as e:
-        st.error(f"Impossibile recuperare la lista modelli: {e}")
-        return ["models/gemini-1.5-pro", "models/gemini-1.0-pro"], ["imagen-3.0"]
+        # Fallback silenzioso in caso di errore lista
+        return ["models/gemini-1.5-pro"], ["imagen-3.0"]
 
     if not imagen_options:
         imagen_options = ["imagen-3.0-generate-001", "imagen-3.0", "imagen-2.0"]
@@ -67,7 +63,6 @@ def get_available_models():
     return gemini_options, imagen_options
 
 def find_best_default(options, target_keyword):
-    """Trova l'indice del modello che contiene la keyword (es. 'gemini-3')"""
     for index, name in enumerate(options):
         if target_keyword in name.lower():
             return index
@@ -75,12 +70,12 @@ def find_best_default(options, target_keyword):
 
 # --- SIDEBAR E SELEZIONE MODELLI ---
 gemini_list, imagen_list = get_available_models()
-
 gemini_default_index = find_best_default(gemini_list, "gemini-3")
 imagen_default_index = find_best_default(imagen_list, "3")
 
 with st.sidebar:
     st.title("🎛️ Control Panel")
+    # RIMOSSO: st.success("Accesso Autorizzato")
     
     st.divider()
     st.subheader("🧠 Scelta Cervello (LLM)")
@@ -96,6 +91,7 @@ with st.sidebar:
         imagen_list, 
         index=imagen_default_index
     )
+    # RIMOSSO: st.info("Stai usando...")
     
     st.divider()
     st.subheader("📂 Uploads")
@@ -104,7 +100,6 @@ with st.sidebar:
 
 # --- FUNZIONI DI ELABORAZIONE ---
 def extract_text_from_pptx(pptx_file):
-    """Estrae tutto il testo da una presentazione."""
     prs = Presentation(pptx_file)
     full_text = []
     for i, slide in enumerate(prs.slides):
@@ -116,9 +111,6 @@ def extract_text_from_pptx(pptx_file):
     return "\n".join(full_text)
 
 def generate_ai_content(source_text, model_name, imagen_target):
-    """
-    Logica Core AI.
-    """
     system_instruction = f"""
     Sei un esperto mondiale di Team Building e comunicazione aziendale. 
     Il tuo compito è analizzare una vecchia presentazione e ristrutturarne i contenuti 
@@ -156,11 +148,10 @@ def generate_ai_content(source_text, model_name, imagen_target):
         response = model.generate_content(prompt, generation_config=generation_config)
         return json.loads(response.text)
     except Exception as e:
-        st.error(f"Errore nella chiamata a {model_name}: {e}")
+        st.error(f"Errore AI: {e}")
         return None
 
 def fill_presentation(template_file, ai_data):
-    """Riempie il template con i dati generati."""
     prs = Presentation(template_file)
     slides_data = ai_data.get("slides_content", [])
     
@@ -185,15 +176,14 @@ def fill_presentation(template_file, ai_data):
 
 # --- MAIN FLOW ---
 st.title("🚀 Team Building AI Architect")
-st.markdown("Carica i file, seleziona i motori AI e genera la nuova presentazione.")
 
 if template_file and content_file:
     if st.button("✨ Avvia Processo AI"):
         
-        with st.spinner("Lettura del vecchio PPT..."):
+        with st.spinner("Lettura file..."):
             raw_text = extract_text_from_pptx(content_file)
             
-        with st.spinner(f"Elaborazione con {selected_gemini_model}..."):
+        with st.spinner("Elaborazione AI in corso..."):
             ai_response = generate_ai_content(raw_text, selected_gemini_model, selected_imagen_model)
             
         if ai_response:
@@ -202,12 +192,12 @@ if template_file and content_file:
             
             with col1:
                 st.subheader("🧠 Ragionamento AI")
-                st.info(ai_response.get("summary"))
+                st.info(ai_response.get("summary")) # Questo è il riassunto del lavoro, non la info sul modello
                 st.subheader("📝 Contenuti Generati")
                 st.json(ai_response.get("slides_content"))
             
             with col2:
-                st.subheader(f"🎨 Prompt per {selected_imagen_model}")
+                st.subheader("🎨 Prompt Immagini")
                 for slide in ai_response.get("slides_content", []):
                     st.markdown(f"**Slide {slide['slide_number']}**")
                     prompts = slide.get('imagen_prompts', [])
@@ -216,7 +206,7 @@ if template_file and content_file:
                     for prompt in prompts:
                         st.code(prompt, language="text")
             
-            with st.spinner("Creazione file PPTx finale..."):
+            with st.spinner("Creazione PPTx finale..."):
                 new_ppt_buffer = fill_presentation(template_file, ai_response)
                 
             st.success("✅ Finito!")
@@ -227,4 +217,4 @@ if template_file and content_file:
                 mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
             )
 else:
-    st.info("👈 Carica i due file PPT nella sidebar per iniziare.")
+    st.info("👈 Carica i file nella sidebar.")
