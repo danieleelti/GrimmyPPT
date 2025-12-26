@@ -30,7 +30,7 @@ if not check_password():
     st.stop()
 
 # --- CONFIGURAZIONE AI ---
-GOOGLE_API_KEY = st.secrets["google"]["api_key"]
+GOOGLE_API_KEY = st.secrets["api_key"]
 genai.configure(api_key=GOOGLE_API_KEY)
 
 # DEFINIZIONE RIGIDA DELLE VERSIONI (TASSATIVO)
