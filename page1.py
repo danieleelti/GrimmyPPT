@@ -44,79 +44,51 @@ def generate_image_with_imagen(prompt, api_key, model_name):
 
 def insert_content_into_ppt(slide, data, img_bytes):
     try:
-        # 1. INSERIMENTO IMMAGINE (SFONDO)
-        # La inseriamo PRIMA di tutto, così sta sotto.
+        # 1. IMMAGINE (Tentativo Safe)
         if img_bytes:
-            image_stream = io.BytesIO(img_bytes)
-            pic = slide.shapes.add_picture(image_stream, Inches(0), Inches(0), width=Inches(13.333), height=Inches(7.5))
-            # Spostiamo indietro (livello 1) per sicurezza
             try:
+                image_stream = io.BytesIO(img_bytes)
+                pic = slide.shapes.add_picture(image_stream, Inches(0), Inches(0), width=Inches(13.333), height=Inches(7.5))
+                # Tentativo di spostare indietro
                 slide.shapes._spTree.remove(pic._element)
                 slide.shapes._spTree.insert(1, pic._element)
-            except: pass
+            except Exception as e:
+                print(f"Warning Z-Order Img P1: {e}")
+                # Se fallisce lo spostamento, fa nulla. L'immagine resta dov'è.
 
-        # 2. SOSTITUZIONE TESTI (METODO "TROVA E SOSTITUISCI")
-        # Invece di cercare il placeholder per tipo, cerchiamo TUTTI i box di testo
-        # e vediamo qual è il titolo e quale il claim in base alla posizione.
-        
-        shapes_with_text = []
+        # 2. TESTI (Metodo Safe)
+        # Cerchiamo tutti i box testo
+        text_shapes = []
         for shape in slide.shapes:
             if shape.has_text_frame and shape.text.strip() != "":
-                shapes_with_text.append(shape)
+                text_shapes.append(shape)
         
-        # Ordiniamo per altezza (Y): Quello più in alto è il titolo, quello sotto è il claim
-        shapes_with_text.sort(key=lambda x: x.top)
+        # Ordina per altezza (Titolo in alto, Claim sotto)
+        text_shapes.sort(key=lambda x: x.top)
         
-        title_written = False
-        claim_written = False
-        
-        # A. TITOLO (Il primo in alto o quello che si chiama Title)
-        if slide.shapes.title:
-            target = slide.shapes.title
-        elif len(shapes_with_text) > 0:
-            target = shapes_with_text[0]
-        else:
-            target = None
-
-        if target:
-            # PORTA IN PRIMO PIANO
-            slide.shapes._spTree.remove(target.element)
-            slide.shapes._spTree.append(target.element)
-            # SCRIVI
-            target.text_frame.paragraphs[0].text = data.get("format_name", "FORMAT NAME")
-            title_written = True
-        
-        # B. CLAIM (Il secondo in alto, o quello che contiene "Subtitle")
-        claim_target = None
-        
-        # Cerchiamo un candidato valido per il claim
-        for shape in shapes_with_text:
-            if shape == target: continue # Salta il titolo già usato
-            # Se troviamo un box che sembra un sottotitolo
-            claim_target = shape
-            break # Prendiamo il primo disponibile sotto il titolo
+        # Scrittura Titolo
+        if text_shapes:
+            t = text_shapes[0]
+            # Porta in primo piano (Safe)
+            try:
+                slide.shapes._spTree.remove(t.element)
+                slide.shapes._spTree.append(t.element)
+            except: pass
             
-        if claim_target:
-             # PORTA IN PRIMO PIANO
-            slide.shapes._spTree.remove(claim_target.element)
-            slide.shapes._spTree.append(claim_target.element)
-            # SCRIVI
-            claim_target.text_frame.paragraphs[0].text = data.get("claim", "CLAIM")
-            claim_written = True
-        
-        # Se non abbiamo trovato dove scrivere, creiamo box nuovi (Extrema Ratio)
-        if not title_written:
-            tb = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(10), Inches(2))
-            tb.text_frame.text = data.get("format_name", "")
-            tb.text_frame.paragraphs[0].font.size = Pt(50)
-            tb.text_frame.paragraphs[0].font.bold = True
+            t.text_frame.paragraphs[0].text = data.get("format_name", "")
             
-        if not claim_written:
-            tb = slide.shapes.add_textbox(Inches(1), Inches(4), Inches(10), Inches(1))
-            tb.text_frame.text = data.get("claim", "")
-            tb.text_frame.paragraphs[0].font.size = Pt(24)
-
+        # Scrittura Claim
+        if len(text_shapes) > 1:
+            c = text_shapes[1]
+            try:
+                slide.shapes._spTree.remove(c.element)
+                slide.shapes._spTree.append(c.element)
+            except: pass
+            
+            c.text_frame.paragraphs[0].text = data.get("claim", "")
+            
         return True
     except Exception as e:
-        st.error(f"Errore Page 1: {e}")
+        st.error(f"Errore critico Page 1: {e}")
+        # Ritorniamo False ma NON crashiamo l'app
         return False
