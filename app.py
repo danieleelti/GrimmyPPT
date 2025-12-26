@@ -4,21 +4,18 @@ from pptx import Presentation
 import io
 import json
 
-# --- SETUP PAGINA ---
+# --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Team Building AI Architect", layout="wide")
 
-# --- GESTIONE LOGIN ---
+# --- LOGIN ---
 if 'password_correct' not in st.session_state: st.session_state['password_correct'] = False
 
 def check_password():
     if st.session_state['password_correct']: return True
-    # Placeholder vuoto per pulizia UI
-    pwd_placeholder = st.sidebar.empty()
-    pwd = pwd_placeholder.text_input("Password", type="password")
+    pwd = st.sidebar.text_input("Password", type="password")
     if st.sidebar.button("Login"):
         if pwd == st.secrets["app_password"]:
             st.session_state['password_correct'] = True
-            pwd_placeholder.empty()
             st.rerun()
         else:
             st.error("Password errata")
@@ -55,127 +52,163 @@ def extract_text_from_pptx(file):
     prs = Presentation(file)
     text = []
     for i, slide in enumerate(prs.slides):
-        s_txt = [s.text for s in slide.shapes if hasattr(s, "text")]
+        s_txt = []
+        # Cerca testo in tutte le shape, non solo placeholder
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text.strip():
+                s_txt.append(shape.text.strip())
         text.append(f"Slide {i+1}: {' | '.join(s_txt)}")
     return "\n".join(text)
 
-# --- CERVELLO AI (GEMINI 3) ---
+# --- INTELLIGENZA (GEMINI) ---
 def generate_ai_content(text, g_model, i_model):
-    """
-    Prompt avanzato che distingue tra COVER e SLIDE INTERNE.
-    """
     sys_prompt = f"""
-    Sei un esperto creativo di Team Building. Devi rifare una presentazione.
+    Sei un esperto Senior di Team Building. Il tuo compito è migrare i contenuti di una vecchia presentazione in un nuovo format.
     
-    STRUTTURA DELL'OUTPUT JSON:
-    Devi restituire un array "slides".
+    REGOLA TASSATIVA 1 (NOMI): Il "Titolo" della slide deve essere ESATTAMENTE il nome del format originale presente nel testo sorgente. NON cambiarlo, NON tradurlo, NON inventarlo. Se si chiama "Cooking Chef", deve restare "Cooking Chef".
     
-    1. LA PRIMA SLIDE DEVE ESSERE DI TIPO "COVER":
+    REGOLA TASSATIVA 2 (STRUTTURA):
+    Devi restituire un JSON con un array "slides".
+    
+    1. PRIMA SLIDE (COVER):
        - "type": "cover"
-       - "title": Nome del format (mantieni quello originale o miglioralo leggermente)
-       - "subtitle": Un CLAIM accattivante, breve e commerciale (Slogan).
-       - "image_prompt": Descrizione per immagine di copertina epica con {i_model}.
+       - "title": Nome esatto del Format.
+       - "subtitle": Un claim commerciale breve e d'impatto (Slogan).
+       - "image_prompt": Descrizione per Imagen di una copertina spettacolare.
 
-    2. LE ALTRE SLIDE SONO DI TIPO "CONTENT":
+    2. ALTRE SLIDE (CONTENT):
        - "type": "content"
-       - "title": Titolo della sezione (es. Dettagli, Obiettivi, Timeline).
-       - "category": Una o due parole chiave (es. "Logistica", "Formazione").
-       - "body": Il testo descrittivo rielaborato in ottica persuasiva.
-       - "image_prompt": Prompt per immagine di supporto.
+       - "title": Nome esatto del Format (ripetilo sempre).
+       - "category": Il titolo della sezione (es: "Dettagli Tecnici", "Obiettivi", "Svolgimento").
+       - "body": Il testo descrittivo. Riscrivilo in modo professionale, chiaro ed energico.
+       - "image_prompt": Descrizione visiva per Imagen relativa al contenuto.
 
-    Output atteso (JSON puro):
+    Output JSON atteso:
     {{
         "slides": [
             {{ "type": "cover", "title": "...", "subtitle": "...", "image_prompt": "..." }},
             {{ "type": "content", "title": "...", "category": "...", "body": "...", "image_prompt": "..." }}
         ],
-        "summary": "..."
+        "summary": "Analisi breve..."
     }}
     """
     
     try:
         model = genai.GenerativeModel(g_model, system_instruction=sys_prompt)
-        resp = model.generate_content(f"Analizza questo PPT: {text}", generation_config={"response_mime_type": "application/json"})
+        resp = model.generate_content(f"Analizza questo PPT e estrai i contenuti:\n{text}", generation_config={"response_mime_type": "application/json"})
         return json.loads(resp.text)
     except Exception as e:
         st.error(f"Errore AI: {e}")
         return None
 
-# --- MANIPOLAZIONE PPT (LOGICA COVER + CONTENT) ---
+# --- MANIPOLAZIONE PPT (LOGICA ROBUSTA) ---
+def move_slide(prs, slide_element, new_index):
+    """Sposta una slide a un indice specifico modificando l'XML."""
+    xml_slides = prs.slides._sldIdLst
+    slides = list(xml_slides)
+    try:
+        xml_slides.remove(slide_element)
+        xml_slides.insert(new_index, slide_element)
+    except ValueError:
+        pass # Già rimossa o non trovata
+
 def fill_presentation_smart(template_file, ai_data):
     prs = Presentation(template_file)
     
-    # Rimuoviamo tutte le slide esistenti nel template per partire puliti
-    # (Oppure assumiamo che il template sia vuoto e usiamo i layout)
-    # Metodo sicuro: Creiamo nuove slide basate sui Layout del Master.
+    # 1. Mappatura Layout (Assumiamo Cover=0, Content=1 nel Master)
+    # Se il template ha un ordine diverso, prova a invertire questi indici (0 e 1)
+    layout_cover = prs.slide_layouts[0]
+    layout_content = prs.slide_layouts[1]
     
-    # Mappatura Layout (Assumiamo l'ordine standard nello Schema Diapositiva)
-    layout_cover = prs.slide_layouts[0]   # Il primo layout è la Cover
-    layout_content = prs.slide_layouts[1] # Il secondo è il Contenuto standard
+    # 2. Gestione Slide Esistenti (Le ultime 4)
+    # Non cancelliamo nulla. Assumiamo che le slide presenti nel file caricato siano quelle fisse (footer, contatti, ecc.)
+    # Le nuove slide verranno inserite PRIMA di queste.
+    num_existing_slides = len(prs.slides)
+    insertion_index = 0 # Iniziamo a inserire dalla posizione 0 (inizio)
     
-    # Se il template caricato ha già delle slide, le cancelliamo per riscriverle
-    # Nota: python-pptx non ha un metodo clear() semplice, quindi creiamo un nuovo ppt basato sul template
-    # ma per semplicità qui APPENDIAMO le slide se il template è vuoto, o usiamo quelle esistenti.
-    
-    # APPROCCIO MIGLIORE: Usare i dati AI per creare slide NUOVE usando i layout corretti.
-    # Per farlo, dobbiamo svuotare il prs caricato o ignorare le slide esistenti.
-    # Qui sotto: Iteriamo i dati AI e creiamo slide.
-    
-    # Cancellazione brutale slide esistenti (xml manipulation) per partire da zero col template grafico
-    while len(prs.slides) > 0:
-        xml_slides = prs.slides._sldIdLst
-        slides = list(xml_slides)
-        xml_slides.remove(slides[0])
-
     generated_slides = ai_data.get("slides", [])
     
     for slide_data in generated_slides:
         s_type = slide_data.get("type", "content")
         
+        # Scegli il layout
+        current_layout = layout_cover if s_type == "cover" else layout_content
+        
+        # Crea la slide (pptx aggiunge sempre alla fine)
+        slide = prs.slides.add_slide(current_layout)
+        
+        # SPOSTAMENTO: Muoviamo la slide appena creata all'indice corretto
+        # L'indice corretto è 'insertion_index'. 
+        # Dopo averla spostata, incrementiamo insertion_index per la prossima.
+        # Nota: slide._element è l'oggetto XML necessario per lo spostamento.
+        move_slide(prs, slide._element, insertion_index)
+        insertion_index += 1
+        
+        # --- RIEMPIMENTO CONTENUTI (Logica "Fuzzy" per evitare slide vuote) ---
+        
+        # 1. TITOLO (Cerca la shape che funge da titolo)
+        if slide.shapes.title:
+            slide.shapes.title.text = slide_data.get("title", "")
+        
+        # 2. IDENTIFICAZIONE BOX DI TESTO (Escluso titolo)
+        # Raccogliamo tutti i placeholder che accettano testo
+        text_shapes = []
+        for shape in slide.placeholders:
+            # Escludiamo il titolo e i placeholder grafici puri se non hanno text_frame
+            if shape.element.ph_idx > 0 and shape.has_text_frame and shape != slide.shapes.title:
+                 text_shapes.append(shape)
+        
+        # Ordiniamo i box trovati. 
+        # Strategia: Il Sottotitolo/Categoria è solitamente più piccolo o posizionato più in alto del Body.
+        # Proviamo a ordinare per posizione verticale (top)
+        text_shapes.sort(key=lambda s: s.top)
+        
         if s_type == "cover":
-            # --- CREAZIONE COVER ---
-            slide = prs.slides.add_slide(layout_cover)
-            
-            # Titolo (Nome Format)
-            if slide.shapes.title:
-                slide.shapes.title.text = slide_data.get("title", "")
-            
-            # Sottotitolo (Claim) -> Di solito è il secondo placeholder
-            # Cerchiamo il placeholder del sottotitolo
-            for shape in slide.placeholders:
-                if shape.element.ph_idx == 1: # Indice tipico sottotitolo
-                    shape.text = slide_data.get("subtitle", "")
-            
-            # Nota: L'immagine non la inseriamo (solo prompt), ma il placeholder resta lì.
+            # COVER: Titolo (già fatto), Sottotitolo (Claim)
+            # Cerchiamo un posto per il sottotitolo
+            if len(text_shapes) > 0:
+                text_shapes[0].text = slide_data.get("subtitle", "")
+                
+            # PROMPT IMMAGINE: Se c'è un placeholder immagine, scriviamoci il prompt dentro per debug
+            # (O nelle note se preferisci non sporcare la slide)
+            # Per ora lo scriviamo nelle note della slide
+            if slide.has_notes_slide:
+                notes = slide.notes_slide.notes_text_frame
+                notes.text = f"IMAGE PROMPT: {slide_data.get('image_prompt')}"
+            else:
+                # Creiamo le note se non esistono
+                pass 
 
         else:
-            # --- CREAZIONE CONTENUTO ---
-            slide = prs.slides.add_slide(layout_content)
+            # CONTENT: Titolo, Categoria, Body
+            # Se abbiamo almeno 2 box testo:
+            # Box 1 (Alto) -> Categoria
+            # Box 2 (Basso/Grande) -> Body
             
-            # Titolo
-            if slide.shapes.title:
-                slide.shapes.title.text = slide_data.get("title", "")
+            if len(text_shapes) >= 2:
+                # Caso perfetto: abbiamo due box distinti
+                text_shapes[0].text = slide_data.get("category", "")
+                text_shapes[1].text = slide_data.get("body", "")
+            elif len(text_shapes) == 1:
+                # Caso fallback: un solo box. Mettiamo tutto lì.
+                combined_text = f"{slide_data.get('category', '').upper()}\n\n{slide_data.get('body', '')}"
+                text_shapes[0].text = combined_text
                 
-            # Logica "Intelligente" per Categoria (piccolo) e Body (grande)
-            # Raccogliamo i placeholder di testo (escluso il titolo)
-            text_placeholders = [
-                s for s in slide.placeholders 
-                if s.has_text_frame and s != slide.shapes.title
-            ]
-            
-            # Ordinamento semplice (spesso basta l'indice, ma l'AI a volte inverte)
-            # Assumiamo: Primo placeholder trovato = Categoria, Secondo = Corpo
-            if len(text_placeholders) >= 1:
-                text_placeholders[0].text = slide_data.get("category", "")
-            if len(text_placeholders) >= 2:
-                text_placeholders[1].text = slide_data.get("body", "")
+        # --- GESTIONE IMMAGINE (SOLO TESTO PROMPT) ---
+        # Cerchiamo placeholder immagine per inserire il testo del prompt (così vedi che c'è)
+        # Oppure lo lasciamo vuoto se l'obiettivo è solo mettere l'immagine dopo.
+        # Se vuoi vedere il prompt SULLA slide temporaneamente:
+        # for shape in slide.placeholders:
+        #    if shape.placeholder_format.type == 18: # 18 = Picture
+        #        if not shape.has_text_frame: continue # Alcuni picture placeholder non hanno testo
+        #        shape.text = f"[IMG PROMPT]: {slide_data.get('image_prompt')}"
 
     out = io.BytesIO()
     prs.save(out)
     out.seek(0)
     return out
 
-# --- INTERFACCIA UTENTE ---
+# --- INTERFACCIA ---
 gem_ops, img_ops = get_available_models()
 idx_g = find_best_default(gem_ops, "gemini-3")
 idx_i = find_best_default(img_ops, "3")
@@ -186,8 +219,7 @@ with st.sidebar:
     sel_gem = st.selectbox("Cervello", gem_ops, index=idx_g)
     sel_img = st.selectbox("Immagini", img_ops, index=idx_i)
     st.divider()
-    # Logica caricamento
-    f_tmpl = st.file_uploader("1. Template (Layout Vuoti)", type=['pptx'])
+    f_tmpl = st.file_uploader("1. Template (Con 4 pag finali)", type=['pptx'])
     f_cont = st.file_uploader("2. Contenuti (Vecchio PPT)", type=['pptx'])
 
 st.title("🚀 Team Building AI Architect")
@@ -195,38 +227,27 @@ st.title("🚀 Team Building AI Architect")
 if f_tmpl and f_cont:
     if st.button("✨ Genera Presentazione"):
         with st.spinner("Analisi e Design in corso..."):
-            # 1. Legge contenuti vecchi
             raw_text = extract_text_from_pptx(f_cont)
-            
-            # 2. Chiama Gemini 3
             ai_resp = generate_ai_content(raw_text, sel_gem, sel_img)
             
         if ai_resp:
             st.divider()
-            
-            # UI Visualizzazione
             col1, col2 = st.columns([1,1])
             with col1:
-                st.subheader("Ragionamento & Testi")
+                st.subheader("Contenuti Generati")
                 st.info(ai_resp.get("summary"))
                 st.json(ai_resp.get("slides"))
             
             with col2:
-                st.subheader("Prompt Generati")
+                st.subheader("Prompt Immagini (Imagen)")
                 for s in ai_resp.get("slides", []):
-                    tipo = s.get('type', 'slide').upper()
-                    st.markdown(f"**{tipo}: {s.get('title')}**")
+                    st.markdown(f"**{s.get('type').upper()}: {s.get('title')}**")
                     st.code(s.get('image_prompt'), language="text")
 
-            # 3. Creazione PPT
-            with st.spinner("Impaginazione nel Template..."):
+            with st.spinner("Impaginazione e mantenimento slide finali..."):
                 final_ppt = fill_presentation_smart(f_tmpl, ai_resp)
             
-            st.success("Completato!")
-            st.download_button(
-                "📥 Scarica PPT Definitivo", 
-                final_ppt, 
-                "TeamBuilding_Remake.pptx"
-            )
+            st.success("Completato! Le slide finali sono state mantenute.")
+            st.download_button("📥 Scarica PPT Definitivo", final_ppt, "New_Presentation.pptx")
 else:
-    st.info("Carica i file nella sidebar.")
+    st.info("Carica i file per iniziare.")
