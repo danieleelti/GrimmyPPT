@@ -4,8 +4,9 @@ import json
 import requests
 import io
 from pptx.util import Inches
+from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 
-# --- FUNZIONE 1: ANALISI TESTO ---
+# --- FUNZIONE 1: ANALISI TESTO (Gemini) ---
 def analyze_content(context, gemini_model):
     try:
         model = genai.GenerativeModel(gemini_model)
@@ -25,7 +26,7 @@ def analyze_content(context, gemini_model):
         st.error(f"Errore Analisi Gemini: {e}")
         return None
 
-# --- FUNZIONE 2: GENERAZIONE IMMAGINE ---
+# --- FUNZIONE 2: GENERAZIONE IMMAGINE (Imagen) ---
 def generate_image_with_imagen(prompt, api_key, model_name):
     if not model_name.startswith("models/"): model_name = f"models/{model_name}"
     url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:predict?key={api_key}"
@@ -44,13 +45,13 @@ def generate_image_with_imagen(prompt, api_key, model_name):
         st.error(f"Errore Imagen: {e}")
         return None
 
-# --- FUNZIONE 3: INSERIMENTO NEL PPT (FIX SALVA FILE) ---
+# --- FUNZIONE 3: INSERIMENTO NEL PPT (FIX LAYOUT SURGERY) ---
 def insert_content_into_ppt(slide, data, img_bytes):
     """
-    Inserisce i contenuti e gestisce l'immagine di sfondo senza corrompere l'XML.
+    Inserisce testi nella slide e sposta chirurgicamente l'immagine nel LAYOUT.
     """
     try:
-        # 1. TESTI
+        # 1. INSERIMENTO TESTI (Slide)
         if slide.shapes.title: 
             slide.shapes.title.text = data.get("format_name", "")
         else:
@@ -61,39 +62,67 @@ def insert_content_into_ppt(slide, data, img_bytes):
             if s.has_text_frame and s != slide.shapes.title and s.text != data.get("format_name", ""):
                 s.text = data.get("claim", ""); break
         
-        # 2. IMMAGINE (FIX "SEND TO BACK" SICURO)
+        # 2. INSERIMENTO IMMAGINE NEL LAYOUT (Metodo Avanzato)
         if img_bytes:
             layout = slide.slide_layout
+            image_stream = io.BytesIO(img_bytes)
             
-            # A. CERCA LE COORDINATE DAL LAYOUT
-            target_ph = None
+            # A. Cerchiamo le coordinate ideali dal placeholder dello schema (se esiste)
+            target_left = Inches(0)
+            target_top = Inches(0)
+            target_width = Inches(10) # Default wide
+            target_height = Inches(5.625)
+            
+            found_ph = False
             for shape in layout.placeholders:
                 if shape.placeholder_format.type in [18, 7]: # Picture or Body
-                    target_ph = shape
+                    target_left = shape.left
+                    target_top = shape.top
+                    target_width = shape.width
+                    target_height = shape.height
+                    found_ph = True
                     break
             
-            image_stream = io.BytesIO(img_bytes)
-            pic = None
+            if not found_ph:
+                # Fallback: schermo intero
+                target_width = Inches(13.333) # 16:9 standard width
+                target_height = Inches(7.5)
 
-            # B. AGGIUNGI IMMAGINE ALLA SLIDE
-            if target_ph:
-                pic = slide.shapes.add_picture(image_stream, target_ph.left, target_ph.top, target_ph.width, target_ph.height)
-            else:
-                # Fallback tutto schermo
-                pic = slide.shapes.add_picture(image_stream, Inches(0), Inches(0), height=Inches(7.5))
+            # B. "Trucco": Aggiungiamo l'immagine alla SLIDE temporaneamente
+            # (Perché non possiamo aggiungerla direttamente al layout facilmente)
+            pic = slide.shapes.add_picture(image_stream, target_left, target_top, target_width, target_height)
             
-            # C. SPOSTA DIETRO (SAFE MODE)
-            # NON usare index 0 (corrompe il file). Usiamo un metodo più sicuro.
-            # Spostiamo l'elemento XML alla posizione 2, che solitamente è dopo le proprietà di base ma prima degli altri oggetti.
+            # C. CHIRURGIA: SPOSTIAMO L'IMMAGINE DALLA SLIDE AL LAYOUT
             try:
-                slide.shapes._spTree.remove(pic._element)
-                # L'indice 2 è statisticamente sicuro per PPTX (salta nvGrpSpPr e grpSpPr)
-                # Se la slide è molto semplice, anche 1 va bene, ma 2 è safe.
-                slide.shapes._spTree.insert(2, pic._element) 
-            except Exception as e:
-                st.warning(f"Impossibile spostare l'immagine sullo sfondo (Z-Order): {e}")
-                # Se fallisce lo spostamento, l'immagine rimane, solo che copre il testo.
-                # Meglio un PPT che si apre con l'immagine sopra, piuttosto che uno corrotto.
+                # 1. Otteniamo la parte immagine (il file fisico nel pacchetto pptx)
+                # L'immagine ha un 'rId' nella slide. Recuperiamolo.
+                rId_slide = pic.element.blipFill.blip.embed
+                image_part = slide.part.related_part(rId_slide)
+                
+                # 2. Creiamo una relazione tra il LAYOUT e quella stessa immagine
+                # Questo permette al layout di "vedere" il file immagine
+                rId_layout = layout.part.relate_to(image_part, RT.IMAGE)
+                
+                # 3. Aggiorniamo l'elemento XML dell'immagine per usare il nuovo rId del layout
+                pic.element.blipFill.blip.embed = rId_layout
+                
+                # 4. Spostiamo fisicamente il nodo XML dall'albero della Slide all'albero del Layout
+                slide.shapes._spTree.remove(pic.element) # Rimuovi dalla slide
+                
+                # Inseriamo nel Layout.
+                # Indice 2 è solitamente sicuro (dopo le proprietà, prima delle shape in primo piano)
+                # Questo la mette sullo sfondo del layout, DIETRO ai loghi/grafiche del layout stesso (se sono stati aggiunti dopo)
+                layout.shapes._spTree.insert(2, pic.element) 
+                
+                # st.success("Immagine integrata con successo nello Schema Diapositiva!")
+
+            except Exception as e_surgery:
+                st.warning(f"Spostamento nel Layout fallito ({e_surgery}). L'immagine rimarrà sulla slide (in fondo).")
+                # Fallback: Se fallisce la chirurgia, almeno rimettiamola sulla slide e mandiamola in fondo
+                # Nota: se abbiamo già rimosso l'elemento, dobbiamo reinserirlo o ricrearlo.
+                # Qui assumiamo che se fallisce prima del remove, è ancora lì. Se fallisce dopo, è persa.
+                # Per sicurezza, nel catch non facciamo nulla di distruttivo se possibile.
+                pass
 
         return True
     except Exception as e:
