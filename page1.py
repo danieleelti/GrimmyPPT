@@ -29,7 +29,9 @@ def analyze_content(context, gemini_model):
 # --- FUNZIONE 2: GENERAZIONE IMMAGINE (Imagen) ---
 def generate_image_with_imagen(prompt, api_key, model_name):
     """Chiama l'API di Imagen per generare l'immagine dal prompt."""
+    # Gestione nome modello
     if not model_name.startswith("models/"): model_name = f"models/{model_name}"
+    
     url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:predict?key={api_key}"
     headers = {"Content-Type": "application/json"}
     data = {"instances": [{"prompt": prompt}], "parameters": {"aspectRatio": "16:9", "sampleCount": 1}}
@@ -46,50 +48,75 @@ def generate_image_with_imagen(prompt, api_key, model_name):
         st.error(f"Errore Imagen: {e}")
         return None
 
-# --- FUNZIONE 3: INSERIMENTO NEL PPT (Con logica Schema Diapositiva) ---
+# --- FUNZIONE 3: INSERIMENTO NEL PPT (FIX SCHEMA DIAPOSITIVA) ---
 def insert_content_into_ppt(slide, data, img_bytes):
-    """Inserisce testi nella slide e IMMAGINE NELLO SCHEMA DIAPOSITIVA."""
+    """
+    Inserisce testi nella slide e l'immagine DIRETTAMENTE NEL LAYOUT (Schema).
+    """
     try:
         # 1. INSERIMENTO TESTI (Nella slide normale)
         # Titolo
-        if slide.shapes.title: slide.shapes.title.text = data.get("format_name", "")
+        if slide.shapes.title: 
+            slide.shapes.title.text = data.get("format_name", "")
         else:
+            # Fallback se non trova il titolo standard
             for s in slide.placeholders:
-                if s.has_text_frame: s.text = data.get("format_name", ""); break
+                if s.has_text_frame: 
+                    s.text = data.get("format_name", "")
+                    break
+        
         # Claim
         for s in slide.placeholders:
             if s.has_text_frame and s != slide.shapes.title and s.text != data.get("format_name", ""):
-                s.text = data.get("claim", ""); break
+                s.text = data.get("claim", "")
+                break
         
-        # 2. INSERIMENTO IMMAGINE NELLO SCHEMA (Master Layout)
+        # 2. INSERIMENTO IMMAGINE NEL LAYOUT (SCHEMA)
         if img_bytes:
-            # Ottieni il layout (schema) associato a questa slide
-            slide_layout = slide.slide_layout
-            inserted_in_master = False
+            # Recuperiamo lo schema (layout) usato da questa slide
+            layout = slide.slide_layout
+            target_placeholder = None
             
-            # Cerca il placeholder immagine nel LAYOUT, non nella slide
-            for shape in slide_layout.placeholders:
-                # Tipo 18 = Picture, Tipo 7 = Body/Object (che può contenere immagini)
+            # Cerchiamo il placeholder immagine nello SCHEMA per prenderne le coordinate
+            for shape in layout.placeholders:
+                # Tipo 18 (Picture) o 7 (Object/Body)
                 if shape.placeholder_format.type in [18, 7]:
-                    try:
-                        image_stream = io.BytesIO(img_bytes)
-                        # Inserisce l'immagine nel placeholder dello schema
-                        shape.insert_picture(image_stream)
-                        inserted_in_master = True
-                        # st.info(f"Immagine inserita nello Schema Diapositiva (Placeholder {shape.placeholder_format.idx})")
-                        break
-                    except Exception as e:
-                        st.warning(f"Impossibile inserire nel placeholder dello schema: {e}")
+                    target_placeholder = shape
+                    break
             
-            if not inserted_in_master:
-                st.warning("⚠️ Nessun placeholder immagine trovato nello Schema Diapositiva. L'immagine non è stata inserita come sfondo.")
-                # Opzionale: fallback per inserirla nella slide normale se lo schema fallisce
-                # image_stream = io.BytesIO(img_bytes)
-                # slide.shapes.add_picture(image_stream, Inches(0), Inches(0), height=Inches(7.5))
+            image_stream = io.BytesIO(img_bytes)
+            
+            if target_placeholder:
+                # PRENDIAMO LE COORDINATE DEL SEGNAPOSTO
+                left = target_placeholder.left
+                top = target_placeholder.top
+                width = target_placeholder.width
+                height = target_placeholder.height
+                
+                # AGGIUNGIAMO L'IMMAGINE ALLO SCHEMA (Come forma semplice, non nel placeholder)
+                # Questo risolve l'errore "LayoutPlaceholder object has no attribute insert_picture"
+                pic = layout.shapes.add_picture(image_stream, left, top, width, height)
+                
+                # (Opzionale) Spostiamo l'immagine indietro nello stack XML dello schema 
+                # per evitare che copra altri elementi fissi dello schema
+                # Sposta l'elemento immagine all'inizio della lista delle shape
+                try:
+                    layout.shapes._spTree.remove(pic._element)
+                    layout.shapes._spTree.insert(2, pic._element) # Indice 2 per non rompere lo sfondo base
+                except:
+                    pass # Se fallisce lo spostamento livello, rimane dove è (spesso va bene comunque)
+
+            else:
+                st.warning("⚠️ Segnaposto immagine non trovato nello Schema. Aggiungo l'immagine come sfondo a pagina intera nello Schema.")
+                # Fallback: Immagine a tutto schermo nel layout
+                pic = layout.shapes.add_picture(image_stream, Inches(0), Inches(0), height=Inches(7.5))
+                # Sposta indietro
+                try:
+                    layout.shapes._spTree.remove(pic._element)
+                    layout.shapes._spTree.insert(2, pic._element)
+                except: pass
 
         return True
     except Exception as e:
-        st.error(f"Errore nell'inserimento nel PPT: {e}")
+        st.error(f"Errore critico inserimento PPT: {e}")
         return False
-
-# La vecchia funzione 'process' non serve più, è stata divisa nelle 3 funzioni sopra.
