@@ -43,77 +43,93 @@ def generate_image(prompt, api_key, model_name):
 
 def insert_into_slide(slide, data, img_bytes):
     try:
-        # 1. IMMAGINE (SUBITO SOTTO)
+        # 1. IMMAGINE (SAFE)
         if img_bytes:
-            image_stream = io.BytesIO(img_bytes)
-            pic = slide.shapes.add_picture(image_stream, Inches(0), Inches(0), width=Inches(13.333), height=Inches(7.5))
             try:
+                image_stream = io.BytesIO(img_bytes)
+                pic = slide.shapes.add_picture(image_stream, Inches(0), Inches(0), width=Inches(13.333), height=Inches(7.5))
                 slide.shapes._spTree.remove(pic._element)
-                slide.shapes._spTree.insert(1, pic._element) # Livello 1 = Fondo sicuro
-            except: pass
+                slide.shapes._spTree.insert(1, pic._element)
+            except Exception as e:
+                print(f"Z-Order Error P2: {e}")
+                # Continua anche se fallisce lo spostamento
 
-        # 2. TITOLO (Cerca "MASTER TITLE STYLE" o Placeholders Titolo)
-        title_found = False
+        # 2. CERCA IL TITOLO
+        title_shape = None
         if slide.shapes.title:
-            target = slide.shapes.title
+            title_shape = slide.shapes.title
         else:
-            # Cerca per testo contenuto
-            candidates = [s for s in slide.shapes if s.has_text_frame and "TITLE" in s.text_frame.text.upper()]
-            target = candidates[0] if candidates else None
-            
-        if target:
-            slide.shapes._spTree.remove(target.element); slide.shapes._spTree.append(target.element) # Bring to front
-            target.text_frame.paragraphs[0].text = data.get("format_name", "")
-            title_found = True
-
-        # 3. TESTO EMOZIONALE (Cerca "Edit text" o il box più grande)
-        text_found = False
-        text_candidates = []
+            # Cerca shape che contiene "TITLE"
+            for s in slide.shapes:
+                if s.has_text_frame and "TITLE" in s.text.upper():
+                    title_shape = s
+                    break
         
-        for shape in slide.shapes:
-            if shape.has_text_frame and shape != target:
-                txt = shape.text_frame.text.strip().lower()
-                # Criterio 1: Contiene "edit text"
-                if "edit" in txt or "text" in txt:
-                    text_candidates.insert(0, shape) # Priorità massima
-                # Criterio 2: È un placeholder Body
-                elif shape.is_placeholder and shape.placeholder_format.type == 7: # Body
-                    text_candidates.append(shape)
-                # Criterio 3: È un box grande generico
-                elif shape.width > Inches(3):
-                    text_candidates.append(shape)
+        if title_shape:
+            # Porta su e Scrivi
+            try:
+                slide.shapes._spTree.remove(title_shape.element)
+                slide.shapes._spTree.append(title_shape.element)
+            except: pass
+            
+            # Scrivi Titolo
+            try:
+                title_shape.text_frame.paragraphs[0].text = data.get("format_name", "")
+            except:
+                title_shape.text = data.get("format_name", "")
 
-        if text_candidates:
-            # Prende il primo candidato migliore
-            target_text = text_candidates[0]
+        # 3. CERCA IL TESTO "EDIT TEXT" (Logica Fallback Multipla)
+        target_text_shape = None
+        
+        # A. Cerca parola chiave specifica
+        for s in slide.shapes:
+            if s.has_text_frame and s != title_shape:
+                txt = s.text.strip().lower()
+                if "edit" in txt or "text" in txt or "subtitle" in txt:
+                    target_text_shape = s
+                    break
+        
+        # B. Se non trova, cerca il Placeholder BODY (tipo 7)
+        if not target_text_shape:
+            for s in slide.placeholders:
+                if s.placeholder_format.type == 7: # Body
+                    target_text_shape = s
+                    break
+                    
+        # C. Se non trova, cerca il box più grande rimasto
+        if not target_text_shape:
+            candidates = [s for s in slide.shapes if s.has_text_frame and s != title_shape and s.width > Inches(2)]
+            if candidates:
+                target_text_shape = max(candidates, key=lambda x: x.width * x.height)
+
+        # SCRITTURA TESTO
+        if target_text_shape:
+            # Porta su
+            try:
+                slide.shapes._spTree.remove(target_text_shape.element)
+                slide.shapes._spTree.append(target_text_shape.element)
+            except: pass
             
-            # Bring to front
-            slide.shapes._spTree.remove(target_text.element); slide.shapes._spTree.append(target_text.element)
-            
-            # Scrittura Preservando Formattazione
-            tf = target_text.text_frame
-            # Se c'è almeno un paragrafo, usiamo quello per mantenere il corsivo
+            # Scrivi (Preservando lo stile del primo paragrafo se esiste)
+            tf = target_text_shape.text_frame
             if len(tf.paragraphs) > 0:
-                p = tf.paragraphs[0]
-                p.text = data.get("emotional_text", "") 
-                # Nota: assegnando a p.text, lo stile del paragrafo (es. Corsivo) dovrebbe restare.
-                # Se assegnassimo a tf.text, resetterebbe tutto.
+                tf.paragraphs[0].text = data.get("emotional_text", "")
             else:
                 tf.text = data.get("emotional_text", "")
             
-            text_found = True
-            st.toast("Testo P2 inserito!", icon="✅")
-
-        # Fallback se non trova nulla
-        if not text_found:
-            st.warning("Box testo non trovato. Ne creo uno.")
-            tb = slide.shapes.add_textbox(Inches(1), Inches(2.5), Inches(10), Inches(3))
+            # Feedback positivo nascosto (o toast se vuoi)
+            # st.toast("Testo P2 Scritto!", icon="✅")
+        
+        else:
+            # ULTIMA SPIAGGIA: Crea box nuovo
+            st.warning("P2: Box testo non trovato. Creazione manuale.")
+            tb = slide.shapes.add_textbox(Inches(1), Inches(3), Inches(10), Inches(3))
             p = tb.text_frame.add_paragraph()
             p.text = data.get("emotional_text", "")
             p.font.size = Pt(24)
-            p.font.italic = True # Forziamo corsivo
+            p.font.italic = True
 
         return True
     except Exception as e:
-        st.error(f"Errore Scrittura P2: {e}")
-        return False
+        st.error(f"Errore critico scrittura P2: {e}")
+        return False # Non crashare l'app
