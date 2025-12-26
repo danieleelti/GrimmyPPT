@@ -6,270 +6,267 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 import tempfile
 import json
 import os
+import time
 from io import BytesIO
 
-# --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Grimmy PPT Agent", layout="wide", page_icon="🍌")
+# --- 1. CONFIGURAZIONE COSTANTI ---
+# FORZATURA TOTALE SU GEMINI 3 COME RICHIESTO
+MODEL_TEXT_NAME = "gemini-3-pro-preview" 
+MODEL_IMAGE_NAME = "imagen-3.0-generate"
 
-# --- AUTH ---
+st.set_page_config(page_title="Grimmy G3", layout="wide", page_icon="🍌")
+
+# --- 2. AUTENTICAZIONE ---
 if "APP_PASSWORD" not in st.secrets:
-    st.warning("⚠️ Manca APP_PASSWORD in secrets.toml")
+    st.error("⚠️ Manca la password nei secrets!")
     st.stop()
-elif "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
 
-if not st.session_state.authenticated:
-    pwd = st.text_input("Password", type="password")
-    if st.button("Entra"):
+if "auth" not in st.session_state: st.session_state.auth = False
+
+if not st.session_state.auth:
+    pwd = st.text_input("Inserisci Password", type="password")
+    if st.button("Accedi"):
         if pwd == st.secrets["APP_PASSWORD"]:
-            st.session_state.authenticated = True
+            st.session_state.auth = True
             st.rerun()
-        else: st.error("No")
+        else:
+            st.error("Password errata")
     st.stop()
 
-# --- API KEY ---
+# --- 3. SETUP API ---
 api_key = st.secrets.get("GOOGLE_API_KEY")
 if not api_key:
-    api_key = st.sidebar.text_input("Google API Key", type="password")
-if api_key:
+    st.error("⚠️ Manca GOOGLE_API_KEY nei secrets!")
+    st.stop()
+
+try:
     genai.configure(api_key=api_key)
+except Exception as e:
+    st.error(f"Errore configurazione API: {e}")
+    st.stop()
 
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("⚙️ Configurazione")
-    
-    # SELEZIONE FORZATA GEMINI 3
-    st.markdown("### 🧠 Cervello")
-    # Qui definisco solo modelli di nuova generazione
-    text_models = ["gemini-3-pro-preview", "gemini-2.0-flash-exp", "gemini-1.5-pro"]
-    selected_text_model = st.selectbox("Modello Testo", text_models, index=0)
-    
-    st.markdown("### 🎨 NanoBanana")
-    # Modelli Imagen
-    img_models = ["imagen-3.0-generate", "imagen-3.0-generate-001"]
-    selected_image_model = st.selectbox("Modello Immagini", img_models, index=0)
+# --- 4. FUNZIONI DI LAVORO ---
 
-    st.markdown("---")
-    template = st.file_uploader("Carica Template Master", type=["pptx"])
+def extract_text_and_logo(ppt_file):
+    """Legge il testo e cerca un'immagine logo nella prima slide."""
+    prs = Presentation(ppt_file)
+    text_content = []
+    logo_blob = None
 
-# --- FUNZIONI ---
-
-def extract_content(file_path):
-    prs = Presentation(file_path)
-    full_text = []
-    first_image = None
-    
     # Estrazione Testo
     for slide in prs.slides:
-        txt = []
+        slide_text = []
         for shape in slide.shapes:
             if hasattr(shape, "text") and shape.text.strip():
-                txt.append(shape.text.strip())
-        if txt: full_text.append(" | ".join(txt))
-        
-    # Estrazione Immagine (Tentativo su Slide e Gruppi)
+                slide_text.append(shape.text.strip())
+        if slide_text:
+            text_content.append(" | ".join(slide_text))
+            
+    # Estrazione Logo (Forensic Light)
     try:
         if len(prs.slides) > 0:
+            # Cerca nella slide 1
             for shape in prs.slides[0].shapes:
                 if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                    first_image = shape.image.blob; break
+                    logo_blob = shape.image.blob; break
+                # Cerca nei gruppi
                 if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-                    for child in shape.shapes:
-                        if child.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                            first_image = child.image.blob; break
-                    if first_image: break
-    except: pass
+                    for s in shape.shapes:
+                        if s.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                            logo_blob = s.image.blob; break
+                    if logo_blob: break
+    except: pass 
+
+    return "\n".join(text_content), logo_blob
+
+def get_ai_plan(text_input):
+    """Chiede a Gemini 3 la struttura e i prompt."""
+    model = genai.GenerativeModel(MODEL_TEXT_NAME)
     
-    return "\n".join(full_text), first_image
-
-def get_gemini_plan(text, model_name):
-    # Safety Settings: Nessun blocco
-    safety = [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-    ]
-
     prompt = f"""
-    You are an Elite Creative Director for Corporate Events.
-    ANALYZE this event content: "{text[:6000]}"
+    Sei un Creative Director esperto in eventi.
+    ANALIZZA questo contenuto grezzo di un format di team building:
+    "{text_input[:7000]}"
     
-    TASK 1: Structure the content for these layouts: Cover_Main, Intro_Concept, Activity_Detail, Technical_Grid, Logistics_Info.
-    TASK 2: Write 2 HIGH-END IMAGE PROMPTS for the Cover Background (NanoBanana).
+    OBIETTIVO: Creare la struttura per una presentazione commerciale e ideare la copertina.
     
-    GUIDELINES FOR PROMPTS:
-    - Contextualized to the specific activity (e.g. if cooking -> kitchen, ingredients).
-    - Style: 4K, Photorealistic, Professional, Depth of Field, Cinematic Lighting.
-    - No text in the image.
-    
-    Output JSON ONLY:
+    OUTPUT RICHIESTO (Solo JSON valido):
     {{
-        "slides": [ {{"layout": "Cover_Main", "title": "...", "body": "..."}} ],
-        "cover_prompt_a": "Prompt describing a professional corporate scene...",
-        "cover_prompt_b": "Prompt describing a creative/abstract metaphorical scene..."
+        "slides": [
+            {{"layout": "Cover_Main", "title": "Titolo Accattivante", "body": "Sottotitolo"}},
+            {{"layout": "Intro_Concept", "title": "Il Concept", "body": "Una frase emozionale breve."}},
+            {{"layout": "Activity_Detail", "title": "Come Funziona", "body": "Elenco puntato passaggi chiave."}},
+            {{"layout": "Technical_Grid", "title": "Scheda Tecnica", "body": "Durata, pax, location."}}
+        ],
+        "prompt_corporate": "Descrizione dettagliata in INGLESE per una foto realistica, stile corporate, alta risoluzione...",
+        "prompt_creative": "Descrizione dettagliata in INGLESE per un'immagine astratta/artistica 3D, metaforica..."
     }}
     """
+    
     try:
-        model = genai.GenerativeModel(model_name, safety_settings=safety)
-        resp = model.generate_content(prompt)
-        
-        # Pulizia JSON
-        raw = resp.text
-        start, end = raw.find('{'), raw.rfind('}') + 1
+        response = model.generate_content(prompt)
+        # Pulizia JSON brutale
+        txt = response.text
+        start = txt.find('{')
+        end = txt.rfind('}') + 1
         if start != -1 and end != -1:
-            return json.loads(raw[start:end])
+            return json.loads(txt[start:end])
         else:
-            st.error(f"Errore formato JSON da Gemini: {raw[:100]}...")
+            st.error(f"Gemini 3 ha risposto ma il JSON non è valido. Risposta parziale: {txt[:100]}...")
             return None
     except Exception as e:
-        st.error(f"Errore Chiamata Gemini ({model_name}): {e}")
+        st.error(f"Errore Gemini 3 ({MODEL_TEXT_NAME}): {e}")
         return None
 
-def generate_image(prompt, model_name):
+def generate_image(prompt):
+    """Chiama Imagen 3."""
     try:
-        # Controllo libreria
         if not hasattr(genai, "ImageGenerationModel"):
-            st.error("⚠️ ERRORE LIBRERIA: `google-generativeai` è vecchia. Devi aggiornare requirements.txt e riavviare l'app!")
+            st.error("ERRORE: Libreria google-generativeai vecchia. Aggiorna requirements.txt!")
             return None
-
-        model = genai.ImageGenerationModel(model_name)
-        res = model.generate_images(
-            prompt=prompt + ", 4k, photorealistic, highly detailed, corporate event style, no text",
+            
+        model = genai.ImageGenerationModel(MODEL_IMAGE_NAME)
+        result = model.generate_images(
+            prompt=prompt + ", 4k, hyper-realistic, corporate event photography, no text",
             number_of_images=1,
             aspect_ratio="16:9",
             person_generation="allow_adult"
         )
-        if res.images:
+        if result.images:
             buf = BytesIO()
-            res.images[0].save(buf, format="PNG")
+            result.images[0].save(buf, format="PNG")
             return buf.getvalue()
     except Exception as e:
-        st.error(f"Errore NanoBanana ({model_name}): {e}")
+        st.error(f"Errore NanoBanana ({MODEL_IMAGE_NAME}): {e}")
         return None
 
-def create_pptx(plan, cover_img, tpl_path):
-    prs = Presentation(tpl_path)
-    prs.slide_width = Inches(13.333); prs.slide_height = Inches(7.5)
-    layout_map = {l.name: l for l in prs.slide_master_layouts}
+def build_pptx(plan, cover_img_bytes, template_file):
+    """Assembla il PPT finale."""
+    prs = Presentation(template_file)
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
     
-    # Cover
-    slide = prs.slides.add_slide(layout_map.get("Cover_Main", prs.slide_master_layouts[0]))
-    c_data = next((s for s in plan.get('slides',[]) if s['layout']=='Cover_Main'), {})
-    if slide.shapes.title: slide.shapes.title.text = c_data.get('title', 'Event')
+    layouts = {l.name: l for l in prs.slide_master_layouts}
     
-    # Immagine Sfondo
-    if cover_img:
+    # 1. Slide Cover
+    cover_layout = layouts.get("Cover_Main", prs.slide_master_layouts[0])
+    slide = prs.slides.add_slide(cover_layout)
+    
+    cover_data = next((s for s in plan['slides'] if s['layout']=='Cover_Main'), {})
+    if slide.shapes.title: 
+        slide.shapes.title.text = cover_data.get('title', 'Titolo')
+    
+    # Immagine Cover (Sfondo)
+    if cover_img_bytes:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
-            tmp.write(cover_img); tmp_path = tmp.name
+            tmp.write(cover_img_bytes)
+            tmp_path = tmp.name
         try:
-            # Inserisce immagine a tutto schermo
-            pic = slide.shapes.add_picture(tmp_path, 0, 0, width=prs.slide_width)
-            # Sposta l'immagine dietro (Hack: taglia e incolla gli altri elementi sopra? 
-            # PPTX mette l'ultimo aggiunto sopra. 
-            # Qui ci affidiamo al layout: se il placeholder è "sopra" nel master, il testo sarà sopra)
+            slide.shapes.add_picture(tmp_path, 0, 0, width=prs.slide_width)
         except: pass
         os.remove(tmp_path)
-    
-    # Altre slide
-    for s_data in plan.get('slides', []):
+        
+    # 2. Altre Slide
+    for s_data in plan['slides']:
         if s_data['layout'] == 'Cover_Main': continue
+        
         l_name = s_data.get('layout', 'Intro_Concept')
-        if l_name in layout_map:
-            s = prs.slides.add_slide(layout_map[l_name])
-            if s.shapes.title: s.shapes.title.text = s_data.get('title','')
-            for ph in s.placeholders:
-                if ph.placeholder_format.idx == 1: ph.text = s_data.get('body','')
+        if l_name not in layouts: l_name = list(layouts.keys())[0] # Fallback
+        
+        slide = prs.slides.add_slide(layouts[l_name])
+        
+        if slide.shapes.title: 
+            slide.shapes.title.text = s_data.get('title', '')
+            
+        for ph in slide.placeholders:
+            if ph.placeholder_format.idx == 1: 
+                ph.text = s_data.get('body', '')
                 
     return prs
 
-# --- INTERFACCIA ---
+# --- 5. INTERFACCIA UTENTE ---
 
-st.title("🍌 Grimmy: Human-in-the-Loop")
+st.title(f"🍌 Grimmy (Powered by {MODEL_TEXT_NAME})")
 
 if "step" not in st.session_state: st.session_state.step = 1
 if "data" not in st.session_state: st.session_state.data = {}
 
-# STEP 1: UPLOAD
+# STEP 1
 if st.session_state.step == 1:
-    source = st.file_uploader("Carica Vecchio PPT", type=["pptx"])
-    if st.button("Analizza con Gemini 3") and template and source:
-        with st.spinner("Analisi in corso..."):
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as t:
-                t.write(template.getvalue()); st.session_state.data['tpl'] = t.name
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as s:
-                s.write(source.getvalue()); st.session_state.data['src'] = s.name
-            
-            txt, orig = extract_content(st.session_state.data['src'])
-            st.session_state.data['orig'] = orig
-            
-            plan = get_gemini_plan(txt, selected_text_model)
-            if plan:
-                st.session_state.data['plan'] = plan
-                st.session_state.step = 2
-                st.rerun()
+    st.header("1. Carica File")
+    col1, col2 = st.columns(2)
+    with col1: tpl = st.file_uploader("Template (.pptx)", type=["pptx"], key="tpl")
+    with col2: src = st.file_uploader("Vecchio PPT (.pptx)", type=["pptx"], key="src")
+        
+    if st.button("Analizza con Gemini 3", type="primary"):
+        if tpl and src:
+            with st.spinner("Analisi in corso..."):
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as t:
+                    t.write(tpl.getvalue()); st.session_state.data['tpl_path'] = t.name
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as s:
+                    s.write(src.getvalue()); st.session_state.data['src_path'] = s.name
+                
+                txt, logo = extract_text_and_logo(st.session_state.data['src_path'])
+                st.session_state.data['logo'] = logo
+                
+                plan = get_ai_plan(txt)
+                if plan:
+                    st.session_state.data['plan'] = plan
+                    st.session_state.step = 2
+                    st.rerun()
 
-# STEP 2: REVISIONE PROMPT
+# STEP 2
 elif st.session_state.step == 2:
-    st.header("🎨 Direzione Creativa (Prompt Review)")
-    st.info(f"Gemini 3 ha scritto questi prompt. Modificali se vuoi.")
-    
+    st.header("2. Direzione Creativa")
     plan = st.session_state.data['plan']
-    
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("Prompt A (Corporate)")
-        pa = st.text_area("Descrizione", plan.get('cover_prompt_a',''), height=150, key="pa")
+        st.subheader("Corporate Prompt")
+        p_corp = st.text_area("P1", plan.get("prompt_corporate", ""), height=150)
     with c2:
-        st.subheader("Prompt B (Creativo)")
-        pb = st.text_area("Descrizione", plan.get('cover_prompt_b',''), height=150, key="pb")
+        st.subheader("Creative Prompt")
+        p_creat = st.text_area("P2", plan.get("prompt_creative", ""), height=150)
         
-    if st.button("🎨 Genera Immagini (NanoBanana)"):
-        with st.spinner("Generazione 4K in corso..."):
-            st.session_state.data['img_a'] = generate_image(pa, selected_image_model)
-            st.session_state.data['img_b'] = generate_image(pb, selected_image_model)
+    if st.button("🎨 Genera Immagini", type="primary"):
+        with st.spinner("NanoBanana sta lavorando..."):
+            st.session_state.data['img_corp'] = generate_image(p_corp)
+            st.session_state.data['img_creat'] = generate_image(p_creat)
             st.session_state.step = 3
             st.rerun()
 
-# STEP 3: RISULTATI
+# STEP 3
 elif st.session_state.step == 3:
-    st.header("🏆 Risultato Finale")
+    st.header("3. Risultato Finale")
     c1, c2, c3 = st.columns(3)
-    sel = None
+    choice = None
     
     with c1:
-        st.caption("Originale")
-        if st.session_state.data.get('orig'): 
-            st.image(st.session_state.data['orig'])
-            if st.button("Usa Logo/Originale"): sel = "orig"
-        else: st.write("Nessuna immagine")
-            
+        st.markdown("**Logo**")
+        if st.session_state.data.get('logo'):
+            st.image(st.session_state.data['logo'])
+            if st.button("Usa Logo"): choice = "logo"
     with c2:
-        st.caption("NanoBanana A")
-        if st.session_state.data.get('img_a'): 
-            st.image(st.session_state.data['img_a'])
-            if st.button("Scegli A"): sel = "A"
-        else: st.error("Errore Gen A")
-            
+        st.markdown("**Corporate**")
+        if st.session_state.data.get('img_corp'):
+            st.image(st.session_state.data['img_corp'])
+            if st.button("Scegli Corporate"): choice = "corp"
     with c3:
-        st.caption("NanoBanana B")
-        if st.session_state.data.get('img_b'): 
-            st.image(st.session_state.data['img_b'])
-            if st.button("Scegli B"): sel = "B"
+        st.markdown("**Creativo**")
+        if st.session_state.data.get('img_creat'):
+            st.image(st.session_state.data['img_creat'])
+            if st.button("Scegli Creativo"): choice = "creat"
             
-    if sel:
+    if choice:
         img = None
-        if sel == "orig": img = st.session_state.data.get('orig')
-        elif sel == "A": img = st.session_state.data.get('img_a')
-        elif sel == "B": img = st.session_state.data.get('img_b')
+        if choice == "logo": img = st.session_state.data['logo']
+        elif choice == "corp": img = st.session_state.data['img_corp']
+        elif choice == "creat": img = st.session_state.data['img_creat']
         
-        prs = create_pptx(st.session_state.data['plan'], img, st.session_state.data['tpl'])
-        out = "Grimmy_Result.pptx"
+        prs = build_pptx(st.session_state.data['plan'], img, st.session_state.data['tpl_path'])
+        out_name = "Grimmy_G3_Presentation.pptx"
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp:
             prs.save(tmp.name)
             with open(tmp.name, "rb") as f:
-                st.download_button("📥 Scarica PPTX", f, out, type="primary")
-    
-    if st.button("Ricomincia"):
-        st.session_state.step = 1
-        st.rerun()
+                st.download_button("📥 SCARICA", f, out_name, type="primary")
+                
+    if st.button("Ricomincia"): st.session_state.step = 1; st.rerun()
