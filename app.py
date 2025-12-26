@@ -2,16 +2,11 @@ import streamlit as st
 import google.generativeai as genai
 from pptx import Presentation
 import io
-
-# --- IMPORTA I CERVELLI DELLE SINGOLE PAGINE ---
-# Nota: Questi file devono esistere nella stessa cartella di app.py
+import importlib
 import page1
-import page2
-import page3
-# import page4 ... (aggiungerai gli altri man mano)
 
-# --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Team Building AI - Precision Mode", layout="wide")
+# --- CONFIGURAZIONE E LOGIN ---
+st.set_page_config(page_title="Team Building AI - Gemini 3 Native", layout="wide")
 
 if 'auth' not in st.session_state: st.session_state['auth'] = False
 if not st.session_state['auth']:
@@ -20,12 +15,48 @@ if not st.session_state['auth']:
         if pwd == st.secrets["app_password"]: st.session_state['auth'] = True; st.rerun()
     st.stop()
 
-# Setup API
+# --- SETUP API E RECUPERO MODELLI DISPONIBILI ---
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 except:
-    st.error("Manca API Key"); st.stop()
+    st.error("ERRORE: Manca GOOGLE_API_KEY nei secrets."); st.stop()
 
+@st.cache_data(ttl=600) # Cache per non chiamare Google a ogni click
+def get_gemini_models():
+    """Chiede a Google quali modelli sono abilitati per questa API Key."""
+    try:
+        model_list = []
+        for m in genai.list_models():
+            # Filtra solo i modelli che generano testo (Gemini)
+            if 'generateContent' in m.supported_generation_methods:
+                if "gemini" in m.name.lower():
+                    model_list.append(m.name)
+        model_list.sort(reverse=True) # Mette i numeri più alti in cima (es. 1.5 prima di 1.0)
+        return model_list
+    except Exception as e:
+        st.error(f"Errore nel recupero modelli: {e}")
+        return ["models/gemini-1.5-pro"] # Fallback di emergenza
+
+# --- SIDEBAR: SELEZIONE MODELLO ---
+st.sidebar.title("🧠 AI Brain Engine")
+available_models = get_gemini_models()
+
+# Logica intelligente: Cerca "gemini-3" o "preview" per metterlo di default
+default_idx = 0
+for i, m in enumerate(available_models):
+    if "gemini-3" in m or "preview" in m: # Priorità alla versione 3 o Preview
+        default_idx = i
+        break
+
+selected_model = st.sidebar.selectbox(
+    "Versione Gemini in uso:", 
+    available_models, 
+    index=default_idx
+)
+
+st.sidebar.success(f"Target: `{selected_model}`")
+
+# --- CORE LOGIC ---
 def get_context(ppt_file):
     prs = Presentation(ppt_file)
     text = []
@@ -33,39 +64,27 @@ def get_context(ppt_file):
         text.append(" | ".join([shape.text for shape in s.shapes if hasattr(shape, "text")]))
     return "\n".join(text)
 
-# --- UI ---
-st.title("🎛️ Controllo Pagina per Pagina")
-t_file = st.file_uploader("Template (10 pag)", type=['pptx'])
-c_file = st.file_uploader("Contenuto", type=['pptx'])
+st.title("⚡ AI PPT Architect")
+
+col1, col2 = st.columns(2)
+with col1:
+    t_file = st.file_uploader("Template (10 pag)", type=['pptx'])
+with col2:
+    c_file = st.file_uploader("Contenuto (Vecchio PPT)", type=['pptx'])
 
 if t_file and c_file:
-    if st.button("🚀 ESEGUI SEQUENZA DI CONTROLLO"):
+    if st.button("🚀 ESEGUI PAGE 1 (Cover)"):
+        
+        # RICARICA MODULO per evitare cache vecchia
+        importlib.reload(page1) 
+        
         prs = Presentation(t_file)
         full_text = get_context(c_file)
         
-        status = st.status("Elaborazione in corso...", expanded=True)
-        
-        # --- ESECUZIONE MODULARE ---
-        
-        # PAGINA 1
-        status.write("PAGE 1: Cover...")
-        page1.process(prs.slides[0], full_text)
-        
-        # PAGINA 2
-        if len(prs.slides) > 1:
-            status.write("PAGE 2: Introduzione...")
-            page2.process(prs.slides[1], full_text)
-            
-        # PAGINA 3
-        if len(prs.slides) > 2:
-            status.write("PAGE 3: Dettagli Tecnici...")
-            page3.process(prs.slides[2], full_text)
-
-        # Qui aggiungerai: page4.process(prs.slides[3], full_text)...
-        
-        status.update(label="Finito!", state="complete")
+        # Passiamo il modello selezionato dalla tendina alla funzione di processo
+        page1.process(prs.slides[0], full_text, model_name=selected_model)
         
         out = io.BytesIO()
         prs.save(out)
         out.seek(0)
-        st.download_button("Scarica PPT", out, "Precision_Remake.pptx")
+        st.download_button("📥 Scarica PPT", out, "Page1_Gemini3.pptx")
