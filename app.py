@@ -6,6 +6,7 @@ from pptx import Presentation
 import json
 import os
 import re
+import time
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Slide Monster Enterprise", page_icon="🏢", layout="wide")
@@ -140,7 +141,7 @@ def worker_bot(template_id, folder_id, filename, ai_data, style_choice):
         if "storageQuotaExceeded" in err:
             st.error("❌ ERRORE QUOTA: Anche nel Drive Condiviso? Assicurati che il robot sia 'Gestore dei contenuti' e non solo 'Collaboratore'.")
         else:
-            st.error(f"❌ Errore Drive: {e}")
+            st.error(f"❌ Errore Drive Copy: {e}")
         return None
     
     # DA QUI IN POI, IL FILE ESISTE ED È MODIFICABILE
@@ -155,9 +156,14 @@ def worker_bot(template_id, folder_id, filename, ai_data, style_choice):
             reqs.append({'replaceAllText': {'containsText': {'text': f'{{{{TITLE_{idx}}}}}'}, 'replaceText': s.get('title', '')}})
             reqs.append({'replaceAllText': {'containsText': {'text': f'{{{{BODY_{idx}}}}}'}, 'replaceText': s.get('body', '')}})
             
+    # Eseguiamo prima i testi per non mischiare le richieste
     if reqs:
-        slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
+        try:
+            slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
+        except Exception as e:
+             st.warning(f"⚠️ Errore minore nei testi: {e}")
 
+    # --- GESTIONE IMMAGINI CON CONTROLLO DI SICUREZZA ---
     reqs_img = []
     img_map = {}
     if 'cover' in ai_data: img_map['IMG_COVER'] = ai_data['cover'].get('image_prompt', '')
@@ -165,20 +171,41 @@ def worker_bot(template_id, folder_id, filename, ai_data, style_choice):
         for i, s in enumerate(ai_data['slides']): img_map[f'IMG_{i+1}'] = s.get('image_prompt', '')
         
     for label, prompt in img_map.items():
-        if prompt:
+        if prompt and prompt.strip():
             el_id = find_image_element_id(new_id, label)
             if el_id:
+                # 1. Genera l'URL
                 url = generate_image_url(prompt, style_choice)
-                reqs_img.append({'replaceImage': {'imageObjectId': el_id, 'imageReplaceMethod': 'CENTER_CROP', 'url': url}})
-    
+                
+                # 2. CONTROLLO DI SICUREZZA: L'URL è valido? (Evita Errore 400)
+                # Se l'URL è vuoto o non inizia con http/https, Google si blocca.
+                if url and url.strip().startswith(('http://', 'https://')):
+                    reqs_img.append({
+                        'replaceImage': {
+                            'imageObjectId': el_id,
+                            'imageReplaceMethod': 'CENTER_CROP',
+                            'url': url
+                        }
+                    })
+                else:
+                    # Se l'URL è rotto, saltiamo questa immagine ma non blocchiamo tutto.
+                    # (Opzionale: potremmo aggiungere un toast qui)
+                    pass 
+
+    # Eseguiamo le immagini valide
     if reqs_img:
-        slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs_img}).execute()
+        try:
+            # Breve pausa per non sovraccaricare l'API delle immagini
+            time.sleep(1) 
+            slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs_img}).execute()
+        except Exception as e:
+             st.error(f"❌ Errore inserimento immagini (Google ha rifiutato anche gli URL validi): {e}")
         
     return new_id
 
 # --- INTERFACCIA ---
 st.title("🦖 Slide Monster (Shared Drive)")
-st.caption("Versione ottimizzata per Drive Condivisi Aziendali")
+st.caption("Versione ottimizzata per Drive Condivisi Aziendali con controllo URL")
 
 col1, col2 = st.columns([1, 2])
 with col1:
@@ -202,7 +229,7 @@ with col2:
                     data = brain_process(txt, selected_gemini, image_style)
                     
                     if data:
-                        with log: st.write(f"💾 Salvataggio nel Drive Condiviso...")
+                        with log: st.write(f"💾 Salvataggio e generazione immagini...")
                         res = worker_bot(tmpl, fold, fname, data, image_style)
                         if res: 
                             st.toast(f"✅ Fatto: {fname}")
