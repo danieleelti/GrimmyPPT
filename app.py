@@ -2,17 +2,19 @@ import streamlit as st
 import google.generativeai as genai
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from pptx import Presentation
 import json
 import os
 import re
+import io
 
 # --- ID PREDEFINITI ---
 DEFAULT_TEMPLATE_ID = "1BHac-ciWsMCxjtNrv8RxB68LyDi9cZrV6VMWEeXCw5A"
 DEFAULT_FOLDER_ID = "1GGDGFQjAqck9Tdo30EZiLEo3CVJOlUKX"
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Slide Monster Enterprise", page_icon="🦖", layout="wide")
+st.set_page_config(page_title="Slide Monster: Bypass Mode", page_icon="🦖", layout="wide")
 
 # --- LOGIN ---
 try:
@@ -28,7 +30,6 @@ try:
         service_account_info,
         scopes=['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/presentations']
     )
-    # Importante: Aggiunta versione v3 per Drive
     drive_service = build('drive', 'v3', credentials=creds)
     slides_service = build('slides', 'v1', credentials=creds)
 
@@ -39,21 +40,10 @@ except Exception as e:
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("🧠 Configurazione")
-    
-    available_models = [
-        "models/gemini-3-pro-preview",
-        "models/gemini-1.5-pro",
-        "models/gemini-1.5-flash"
-    ]
-    
+    available_models = ["models/gemini-3-pro-preview", "models/gemini-1.5-pro", "models/gemini-1.5-flash"]
     selected_gemini = st.selectbox("Modello Attivo", available_models, index=0)
     st.divider()
-    
-    image_style = st.selectbox(
-        "Stile Immagini", 
-        ["Imagen 4 (High Fidelity)", "Flux Realism", "Illustrazione 3D", "Disegno"], 
-        index=0
-    )
+    image_style = st.selectbox("Stile Immagini", ["Imagen 4 (High Fidelity)", "Flux Realism", "Illustrazione 3D", "Disegno"], index=0)
 
 # --- FUNZIONI ---
 
@@ -89,13 +79,12 @@ def brain_process(text, model_name, style):
     OUTPUT: JSON per riempire un template (Cover + 5 slide).
     
     REGOLE:
-    1. SCRIVI SOLO IN ITALIANO (Testi slide).
-    2. Migliora il tono: rendilo professionale, energico e sintetico.
-    3. Cover: Il sottotitolo deve essere uno slogan di marketing.
-    4. Image Prompts: Scrivi le descrizioni delle immagini in INGLESE.
-       Stile immagini: {style_prompt}.
+    1. SCRIVI SOLO IN ITALIANO.
+    2. Tono: professionale, energico e sintetico.
+    3. Cover: Sottotitolo = slogan.
+    4. Image Prompts: Descrizioni in INGLESE. Stile: {style_prompt}.
     
-    STRUTTURA JSON TASSATIVA:
+    STRUTTURA JSON:
     {{
         "cover": {{ "title": "Titolo", "subtitle": "Slogan", "image_prompt": "..." }},
         "slides": [
@@ -110,13 +99,9 @@ def brain_process(text, model_name, style):
     
     ai = genai.GenerativeModel(model_name)
     try:
-        resp = ai.generate_content(
-            f"{prompt}\n\nTESTO SORGENTE:\n{text}", 
-            generation_config={"response_mime_type": "application/json"}
-        )
+        resp = ai.generate_content(f"{prompt}\n\nTESTO:\n{text}", generation_config={"response_mime_type": "application/json"})
         if not resp.text: return None
-        cleaned_text = clean_json_text(resp.text)
-        return json.loads(cleaned_text)
+        return json.loads(clean_json_text(resp.text))
     except Exception as e:
         st.error(f"Errore Modello ({model_name}): {e}")
         return None
@@ -137,27 +122,57 @@ def find_image_element_id(prs_id, label):
     except: pass
     return None
 
-def worker_bot(template_id, folder_id, filename, ai_data, style_choice):
-    # --- MODIFICA CRUCIALE PER DRIVE AZIENDALI ---
+# --- NUOVA LOGICA DI SALVATAGGIO (BYPASS QUOTA) ---
+def worker_bot_bypass(template_id, folder_id, filename, ai_data, style_choice):
+    new_id = None
+    
+    # TENTATIVO 1: Copia Standard (Veloce)
     try:
-        file_metadata = {
-            'name': filename,
-            'parents': [folder_id]
-        }
-        
-        # supportsAllDrives=True è la chiave per evitare l'errore di Quota sui Drive condivisi
         copy = drive_service.files().copy(
             fileId=template_id, 
-            body=file_metadata,
-            supportsAllDrives=True 
+            body={'name': filename, 'parents': [folder_id]},
+            supportsAllDrives=True
         ).execute()
-        
         new_id = copy.get('id')
     except Exception as e:
-        st.error(f"❌ ERRORE DRIVE (Copy): {e}")
-        return None
-    
-    # 2. TESTI
+        # Se fallisce per QUOTA, attiviamo il piano B
+        if "storageQuotaExceeded" in str(e):
+            st.warning(f"⚠️ Quota Error rilevato. Attivo procedura di 'Clonazione via RAM' per aggirare il blocco...")
+            try:
+                # PIANO B: Download in RAM -> Upload come nuovo file
+                # 1. Export del Template in formato modificabile
+                request = drive_service.files().export_media(
+                    fileId=template_id, 
+                    mimeType='application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                )
+                fh = io.BytesIO()
+                downloader = MediaIoBaseDownload(fh, request)
+                done = False
+                while done is False:
+                    status, done = downloader.next_chunk()
+                fh.seek(0)
+                
+                # 2. Upload come nuovo Google Slide (questo resetta la proprietà e spesso la quota)
+                media = MediaIoBaseUpload(fh, mimetype='application/vnd.openxmlformats-officedocument.presentationml.presentation', resumable=True)
+                body = {
+                    'name': filename, 
+                    'parents': [folder_id],
+                    'mimeType': 'application/vnd.google-apps.presentation' # Converte automaticamente in GSlide
+                }
+                new_file = drive_service.files().create(body=body, media_body=media, supportsAllDrives=True).execute()
+                new_id = new_file.get('id')
+                st.success("✅ Bypass riuscito! File creato.")
+                
+            except Exception as e2:
+                st.error(f"❌ Fallito anche il Bypass: {e2}")
+                return None
+        else:
+            st.error(f"❌ Errore Drive Generico: {e}")
+            return None
+
+    if not new_id: return None
+
+    # DA QUI IN POI È UGUALE: SOSTITUZIONE TESTI E IMMAGINI
     reqs = []
     if 'cover' in ai_data:
         reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': ai_data['cover'].get('title', 'Titolo')}})
@@ -172,7 +187,6 @@ def worker_bot(template_id, folder_id, filename, ai_data, style_choice):
     if reqs:
         slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
 
-    # 3. IMMAGINI
     reqs_img = []
     img_map = {}
     if 'cover' in ai_data: img_map['IMG_COVER'] = ai_data['cover'].get('image_prompt', '')
@@ -198,7 +212,7 @@ def worker_bot(template_id, folder_id, filename, ai_data, style_choice):
     return new_id
 
 # --- INTERFACCIA ---
-st.title("🦖 Slide Monster (Enterprise Fix)")
+st.title("🦖 Slide Monster (Bypass Edition)")
 
 col1, col2 = st.columns([1, 2])
 
@@ -220,31 +234,27 @@ with col2:
             
             for i, f in enumerate(uploaded):
                 fname = f.name.replace(".pptx", "") + "_ITA"
-                
                 with log_box:
-                    st.write(f"▶️ **{fname}**: Elaborazione con {selected_gemini}...")
+                    st.write(f"▶️ **{fname}**: Elaborazione...")
                 
                 try:
                     txt = extract_text_from_pptx(f)
-                    
                     data = brain_process(txt, selected_gemini, image_style)
                     
                     if data:
-                        res_id = worker_bot(tmpl, fold, fname, data, image_style)
+                        res_id = worker_bot_bypass(tmpl, fold, fname, data, image_style)
                         if res_id:
                             st.toast(f"✅ Fatto: {fname}")
                             with log_box:
-                                st.success(f"✅ **{fname}** salvato su Drive!")
+                                st.success(f"✅ **{fname}** salvato!")
                         else:
                             with log_box:
                                 st.error(f"❌ Errore salvataggio {fname}")
                     else:
                         with log_box:
-                            st.error(f"❌ Errore AI (JSON vuoto) con {selected_gemini}")
-                            
+                            st.error(f"❌ Errore AI su {fname}")
                 except Exception as e:
                     st.error(f"Critico: {e}")
                 
                 bar.progress((i+1)/len(uploaded))
-            
-            st.success("Tutto finito!")
+            st.success("Finito!")
