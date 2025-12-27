@@ -24,7 +24,7 @@ if "app_state" not in st.session_state:
 if "draft_data" not in st.session_state:
     st.session_state.draft_data = {}
 if "final_images" not in st.session_state:
-    st.session_state.final_images = {} # Qui salviamo gli URL man mano che li generi
+    st.session_state.final_images = {} # Qui salviamo gli URL generati man mano
 
 # --- LOGIN ---
 try:
@@ -54,7 +54,7 @@ with st.sidebar:
     image_style = st.selectbox("Stile Immagini", ["Imagen 4 (High Fidelity)", "Flux Realism", "Illustrazione 3D"], index=0)
     
     st.divider()
-    if st.button("🔄 Nuova Analisi (Reset)"):
+    if st.button("🔄 Nuova Sessione (Reset)"):
         st.session_state.app_state = "UPLOAD"
         st.session_state.draft_data = {}
         st.session_state.final_images = {}
@@ -112,25 +112,23 @@ def brain_process(text, model_name, style):
         return None
 
 def generate_image_url(prompt, style_choice):
-    # 1. Pulizia aggressiva del prompt
+    # Pulizia rigorosa per evitare errori "No connection adapters"
     safe_prompt = prompt.strip().replace("\n", " ").replace("\r", "")
     if safe_prompt.endswith("."): safe_prompt = safe_prompt[:-1]
     
-    # 2. Encoding sicuro
     encoded_prompt = urllib.parse.quote(safe_prompt)
     seed = os.urandom(2).hex()
     
-    # 3. Costruzione URL
     url = f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){encoded_prompt}?width=1920&height=1080&model=flux&nologo=true&seed={seed}"
     return url.strip()
 
 def get_image_bytes(url):
-    """Scarica immagine con gestione robusta"""
+    """Scarica l'immagine per l'anteprima"""
     headers = {"User-Agent": "Mozilla/5.0"}
     if not url or not url.startswith("http"): return None
     for attempt in range(3):
         try:
-            response = requests.get(url, headers=headers, timeout=30)
+            response = requests.get(url, headers=headers, timeout=25)
             if response.status_code == 200: return BytesIO(response.content)
             else: time.sleep(1)
         except Exception: time.sleep(1)
@@ -149,6 +147,7 @@ def find_image_element_id_smart(prs_id, label):
     return None
 
 def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_urls):
+    # 1. Copia File
     try:
         copy = drive_service.files().copy(
             fileId=template_id, body={'name': filename, 'parents': [folder_id]}, supportsAllDrives=True
@@ -158,6 +157,7 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_
         st.error(f"❌ Errore Drive Copy: {e}")
         return None
     
+    # 2. Testi
     reqs = []
     if 'cover' in ai_data:
         reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': ai_data['cover'].get('title', 'Titolo')}})
@@ -171,7 +171,7 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_
     if reqs:
         slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
 
-    # IMMAGINI
+    # 3. Immagini (Usa quelle già generate)
     url_map = {}
     if 'cover' in ai_data: url_map['IMG_COVER'] = pregenerated_urls.get('cover')
     if 'slides' in ai_data:
@@ -199,16 +199,15 @@ with col1:
     tmpl = st.text_input("ID Template", value=DEFAULT_TEMPLATE_ID)
     fold = st.text_input("ID Cartella Output", value=DEFAULT_FOLDER_ID)
 
-# --- FASE 1: UPLOAD ---
+# --- FASE 1: UPLOAD & BOZZA ---
 if st.session_state.app_state == "UPLOAD":
     with col2:
-        st.info("Passo 1: Carica i file per generare la bozza.")
+        st.info("Passo 1: Carica i file per generare la bozza dei testi e dei prompt.")
         uploaded = st.file_uploader("Carica PPT", accept_multiple_files=True, type=['pptx'])
         
-        if st.button("🧠 Analizza Testi e Prompt", type="primary"):
+        if st.button("🧠 Analizza e Proponi Prompt", type="primary"):
             if uploaded:
                 st.session_state.draft_data = {}
-                # Inizializza la struttura per le immagini finali
                 st.session_state.final_images = {}
                 
                 bar = st.progress(0)
@@ -222,7 +221,7 @@ if st.session_state.app_state == "UPLOAD":
                             "ai_data": data,
                             "original_file": f.name
                         }
-                        # Crea entry vuota per le immagini di questo file
+                        # Crea contenitore vuoto per le immagini di questo file
                         st.session_state.final_images[fname] = {}
                         
                     bar.progress((i+1)/len(uploaded))
@@ -230,65 +229,69 @@ if st.session_state.app_state == "UPLOAD":
                 st.session_state.app_state = "EDIT"
                 st.rerun()
 
-# --- FASE 2: EDITING INTERATTIVO (Pulsanti Singoli) ---
+# --- FASE 2: SALA DI REGIA (EDITING PUNTUALE) ---
 elif st.session_state.app_state == "EDIT":
     st.divider()
-    st.subheader("✏️ Sala di Regia")
-    st.info("Modifica i prompt e clicca '🎨 Genera' per vedere l'anteprima subito, immagine per immagine.")
+    st.subheader("✏️ Sala di Regia: Genera Immagini Una per Una")
+    st.info("Modifica il prompt se vuoi, poi clicca sul pulsante 'Genera' per vedere il risultato IMMEDIATAMENTE.")
 
-    # Loop sui file
+    # Loop su ogni file caricato
     for fname, content in st.session_state.draft_data.items():
         data = content['ai_data']
         
         with st.expander(f"📂 File: **{fname}**", expanded=True):
             
-            # --- SEZIONE COPERTINA ---
+            # === COPERTINA ===
             st.markdown("### 1. Copertina")
-            c1, c2 = st.columns([2, 2])
+            c1, c2 = st.columns([1, 1])
             
-            # Colonna Sinistra: Prompt Text Area
+            # COLONNA SINISTRA: Prompt e Pulsante
             with c1:
                 st.markdown(f"**Titolo:** {data['cover'].get('title')}")
                 key_prompt_cover = f"p_cover_{fname}"
                 new_prompt = st.text_area(
                     "Prompt Copertina", 
                     value=data['cover'].get('image_prompt', ''), 
-                    height=120, 
+                    height=100, 
                     key=key_prompt_cover
                 )
-                # Aggiorna il dato in memoria
+                # Salviamo il prompt aggiornato
                 st.session_state.draft_data[fname]['ai_data']['cover']['image_prompt'] = new_prompt
                 
+                # PULSANTE DEDICATO COVER
                 if st.button(f"🎨 Genera Copertina", key=f"btn_cover_{fname}"):
-                    with st.spinner("Dipingo..."):
+                    with st.spinner("Creazione immagine in corso..."):
                         url = generate_image_url(new_prompt, image_style)
                         # Salva URL
                         st.session_state.final_images[fname]['cover'] = url
-                        # Pre-warm connection
+                        # Tentativo di scaricamento (check)
                         try: requests.get(url, timeout=5)
                         except: pass
-                        st.rerun()
+                        st.rerun() # Ricarica per mostrare l'immagine a destra
 
-            # Colonna Destra: Anteprima Immagine
+            # COLONNA DESTRA: Anteprima Immagine
             with c2:
                 current_url = st.session_state.final_images[fname].get('cover')
                 if current_url:
-                    st.success("Immagine Generata!")
-                    st.image(current_url, use_container_width=True)
+                    img_bytes = get_image_bytes(current_url)
+                    if img_bytes:
+                        st.success("✅ Generata")
+                        st.image(img_bytes, use_container_width=True)
+                    else:
+                        st.warning("⚠️ Immagine creata ma non caricabile (Timeout)")
                 else:
-                    st.info("Nessuna immagine generata.")
+                    st.info("L'immagine apparirà qui.")
 
             st.markdown("---")
 
-            # --- SEZIONE SLIDES ---
+            # === SLIDES ===
             if 'slides' in data:
                 st.markdown("### 2. Slide Interne")
                 for idx, slide in enumerate(data['slides']):
                     s_key = f"slide_{idx+1}"
+                    sc1, sc2 = st.columns([1, 1])
                     
-                    sc1, sc2 = st.columns([2, 2])
-                    
-                    # Sinistra: Prompt
+                    # COLONNA SINISTRA
                     with sc1:
                         st.caption(f"Slide {idx+1}")
                         st.markdown(f"**{slide.get('title')}**")
@@ -300,30 +303,34 @@ elif st.session_state.app_state == "EDIT":
                             height=100, 
                             key=key_prompt_slide
                         )
-                        # Aggiorna memoria
                         st.session_state.draft_data[fname]['ai_data']['slides'][idx]['image_prompt'] = new_slide_prompt
                         
+                        # PULSANTE DEDICATO SLIDE
                         if st.button(f"🎨 Genera Slide {idx+1}", key=f"btn_slide_{idx}_{fname}"):
-                            with st.spinner("Dipingo..."):
+                            with st.spinner(f"Creazione Slide {idx+1}..."):
                                 url = generate_image_url(new_slide_prompt, image_style)
                                 st.session_state.final_images[fname][s_key] = url
                                 try: requests.get(url, timeout=5)
                                 except: pass
                                 st.rerun()
 
-                    # Destra: Immagine
+                    # COLONNA DESTRA
                     with sc2:
                         current_url_slide = st.session_state.final_images[fname].get(s_key)
                         if current_url_slide:
-                            st.success(f"Slide {idx+1} Pronta")
-                            st.image(current_url_slide, use_container_width=True)
+                            img_bytes = get_image_bytes(current_url_slide)
+                            if img_bytes:
+                                st.success(f"✅ Slide {idx+1}")
+                                st.image(img_bytes, use_container_width=True)
+                            else:
+                                st.warning("⚠️ Errore caricamento")
                         else:
-                            st.markdown("") # Spacer
+                            st.empty() # Spazio vuoto
 
                     st.divider()
 
-    # --- BARRA DI AZIONE FINALE ---
-    st.markdown("### ✅ Azioni Finali")
+    # --- FOOTER AZIONI ---
+    st.markdown("### ✅ Ho finito")
     col_back, col_save = st.columns([1, 4])
     
     with col_back:
@@ -332,22 +339,23 @@ elif st.session_state.app_state == "EDIT":
             st.rerun()
             
     with col_save:
-        if st.button("💾 Ho finito: SALVA TUTTO SU DRIVE", type="primary", use_container_width=True):
+        if st.button("💾 SALVA TUTTO SU DRIVE", type="primary", use_container_width=True):
             bar = st.progress(0)
             status_box = st.empty()
             
             i = 0
             for fname, content in st.session_state.draft_data.items():
-                status_box.write(f"Scrittura file **{fname}**...")
+                status_box.write(f"Scrittura file **{fname}** e inserimento immagini...")
                 urls = st.session_state.final_images.get(fname, {})
                 
+                # Chiamata al worker finale che usa gli URL già generati
                 res = worker_bot_finalize(tmpl, fold, fname, content['ai_data'], urls)
                 
-                if res: st.toast(f"✅ File salvato: {fname}")
+                if res: st.toast(f"✅ Salvato: {fname}")
                 else: st.error(f"❌ Errore salvataggio {fname}")
                 
                 i += 1
                 bar.progress(i / len(st.session_state.draft_data))
             
             st.balloons()
-            st.success("Tutto completato! Controlla il Drive.")
+            st.success("Operazione Completata! Controlla la cartella Drive.")
