@@ -112,35 +112,43 @@ def brain_process(text, model_name, style):
         return None
 
 def generate_image_url(prompt, style_choice):
-    # 1. PULIZIA ESTREMA: Rimuove qualsiasi cosa non sia testo base
-    # Rimuove ritorni a capo
-    clean = prompt.replace("\n", " ").replace("\r", " ")
-    # Rimuove spazi doppi
-    clean = re.sub(' +', ' ', clean)
-    # Rimuove spazi inizio/fine
-    clean = clean.strip()
+    # 1. Pulizia Nucleare: Rimuove QUALSIASI carattere di controllo (newline, tab, ecc)
+    # Usa Regex per tenere solo caratteri stampabili standard se necessario, ma strip() solitamente basta se usato bene
+    clean_prompt = str(prompt).strip()
+    clean_prompt = " ".join(clean_prompt.split()) # Rimuove doppi spazi e newline interni
     
-    # 2. ENCODING: Trasforma spazi in %20, ecc.
-    encoded_prompt = urllib.parse.quote(clean)
+    # 2. Encoding sicuro
+    encoded_prompt = urllib.parse.quote(clean_prompt)
     seed = os.urandom(2).hex()
     
-    # 3. URL BUILDER (Usa Flux che è il motore dietro Pollinations High Quality)
-    url = f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){encoded_prompt}?width=1920&height=1080&model=flux&nologo=true&seed={seed}"
-    return url
+    # 3. Costruzione URL manuale senza f-string complesse che potrebbero nascondere caratteri
+    base_url = "[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/)"
+    params = f"?width=1920&height=1080&model=flux&nologo=true&seed={seed}"
+    full_url = base_url + encoded_prompt + params
+    
+    return full_url.strip() # Strip finale per sicurezza
 
 def get_image_bytes(url):
-    """Scarica con Debug degli errori"""
+    """Scarica con pulizia preventiva dell'URL"""
     headers = {"User-Agent": "Mozilla/5.0"}
     
+    # PULIZIA PREVENTIVA URL (Il fix per il tuo errore)
+    if url:
+        # Rimuove caratteri invisibili iniziali che causano "No connection adapters"
+        url = url.strip()
+        # Se per caso c'è spazzatura prima dell'http, la togliamo
+        if "http" in url and not url.startswith("http"):
+            idx = url.find("http")
+            url = url[idx:]
+    
     try:
-        # Timeout a 10s per vedere subito se fallisce
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status() # Lancia errore se 404/500
+        response = requests.get(url, headers=headers, timeout=20)
+        response.raise_for_status() 
         return BytesIO(response.content), None
-    except requests.exceptions.MissingSchema:
-        return None, "L'URL generato non è valido (Manca http)"
-    except requests.exceptions.ConnectionError:
-        return None, "Connessione rifiutata (Errore DNS o Server down)"
+    except requests.exceptions.InvalidSchema as e:
+        # Questo cattura l'errore "No connection adapters"
+        # Mostriamo il REPR dell'URL per vedere i caratteri nascosti (debug)
+        return None, f"URL Invalido (Caratteri nascosti?): {repr(url)}"
     except Exception as e:
         return None, str(e)
 
@@ -186,21 +194,23 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_
         for i, s in enumerate(ai_data['slides']): url_map[f'IMG_{i+1}'] = pregenerated_urls.get(f'slide_{i+1}')
         
     for label, url in url_map.items():
-        if url and url.startswith("http"):
-            el_id = find_image_element_id_smart(new_id, label)
-            if el_id:
-                req = {'replaceImage': {'imageObjectId': el_id, 'imageReplaceMethod': 'CENTER_CROP', 'url': url}}
-                try:
-                    slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': [req]}).execute()
-                    time.sleep(0.5)
-                except Exception: pass
+        if url:
+            url = url.strip() # Pulizia finale
+            if url.startswith("http"):
+                el_id = find_image_element_id_smart(new_id, label)
+                if el_id:
+                    req = {'replaceImage': {'imageObjectId': el_id, 'imageReplaceMethod': 'CENTER_CROP', 'url': url}}
+                    try:
+                        slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': [req]}).execute()
+                        time.sleep(0.5)
+                    except Exception: pass
     return new_id
 
 # ==========================================
 # INTERFACCIA
 # ==========================================
 
-st.title("🎬 Slide Monster: Director Mode (Debug)")
+st.title("🎬 Slide Monster: Director Mode (Fixed)")
 
 col1, col2 = st.columns([1, 2])
 with col1:
@@ -246,7 +256,6 @@ elif st.session_state.app_state == "EDIT":
                 st.session_state.draft_data[fname]['ai_data']['cover']['image_prompt'] = new_prompt
                 
                 if st.button(f"🎨 Genera Cover", key=f"btn_cov_{fname}"):
-                    # 1. Genera URL
                     url = generate_image_url(new_prompt, image_style)
                     st.session_state.final_images[fname]['cover'] = url
                     st.rerun()
@@ -254,14 +263,14 @@ elif st.session_state.app_state == "EDIT":
             with c2:
                 url = st.session_state.final_images[fname].get('cover')
                 if url:
-                    st.caption(f"URL Generato: {url}") # DEBUG VISIVO
-                    # Prova a scaricare
+                    # DEBUG LINK
+                    st.caption(f"URL: {url}")
                     img_bytes, error = get_image_bytes(url)
                     if img_bytes:
                         st.image(img_bytes, use_container_width=True)
                     else:
-                        st.error(f"Errore caricamento: {error}")
-                        st.link_button("Prova ad aprire nel browser", url) # LINK PER TEST MANUALE
+                        st.error(f"Errore: {error}")
+                        st.link_button("Test URL nel browser", url)
 
             # --- SLIDES ---
             if 'slides' in data:
@@ -289,7 +298,7 @@ elif st.session_state.app_state == "EDIT":
                                 st.image(img_bytes, use_container_width=True)
                             else:
                                 st.error(f"Errore: {error}")
-                                st.link_button("Apri link", url)
+                                st.link_button("Test URL nel browser", url)
 
             st.divider()
 
