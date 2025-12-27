@@ -8,6 +8,8 @@ import os
 import re
 import time
 import urllib.parse
+import requests  # <--- NUOVO: Serve per scaricare le immagini in modo sicuro
+from io import BytesIO
 
 # --- CONFIGURAZIONE ---
 st.set_page_config(page_title="Slide Monster: Visual Agent", page_icon="👁️", layout="wide")
@@ -20,7 +22,7 @@ DEFAULT_FOLDER_ID = "1wL1oxos7ISS03GzfW0db44XoAk3UocV0"
 if "analysis_done" not in st.session_state:
     st.session_state.analysis_done = False
 if "results" not in st.session_state:
-    st.session_state.results = {} # Conterrà i dati generati
+    st.session_state.results = {} 
 
 # --- LOGIN ---
 try:
@@ -53,19 +55,19 @@ with st.sidebar:
     st.subheader("🔍 Diagnostica")
     if st.button("Analizza Etichette Template"):
         try:
-            st.write("Scansione in corso...")
-            prs = slides_service.presentations().get(presentationId=DEFAULT_TEMPLATE_ID).execute()
-            found_tags = []
-            for slide in prs.get('slides', []):
-                for el in slide.get('pageElements', []):
-                    if 'description' in el:
-                        found_tags.append(f"Slide {slide['objectId'][-3:]}: {el['description']}")
-            
-            if found_tags:
-                st.success(f"Trovate {len(found_tags)} etichette:")
-                st.code("\n".join(found_tags))
-            else:
-                st.error("❌ NESSUNA etichetta trovata! Il robot non sa dove mettere le foto.")
+            with st.spinner("Scansione etichette..."):
+                prs = slides_service.presentations().get(presentationId=DEFAULT_TEMPLATE_ID).execute()
+                found_tags = []
+                for slide in prs.get('slides', []):
+                    for el in slide.get('pageElements', []):
+                        if 'description' in el:
+                            found_tags.append(f"Slide {slide['objectId'][-3:]}: {el['description']}")
+                
+                if found_tags:
+                    st.success(f"Trovate {len(found_tags)} etichette:")
+                    st.code("\n".join(found_tags))
+                else:
+                    st.error("❌ NESSUNA etichetta trovata!")
         except Exception as e:
             st.error(f"Errore scansione: {e}")
 
@@ -119,17 +121,26 @@ def brain_process(text, model_name, style):
         if not resp.text: return None
         return json.loads(clean_json_text(resp.text))
     except Exception as e:
-        st.error(f"Errore Modello ({model_name}): {e}")
         return None
 
 def generate_image_url(prompt, style_choice):
+    # Encoding sicuro per evitare crash
     safe_prompt = prompt.replace("\n", " ").strip()
     encoded_prompt = urllib.parse.quote(safe_prompt)
     seed = os.urandom(2).hex()
     return f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){encoded_prompt}?width=1920&height=1080&model=flux&nologo=true&seed={seed}"
 
+def get_image_bytes(url):
+    """Scarica l'immagine in modo sicuro senza far crashare Streamlit"""
+    try:
+        response = requests.get(url, timeout=10) # Timeout di 10 secondi
+        if response.status_code == 200:
+            return BytesIO(response.content)
+    except Exception:
+        pass
+    return None
+
 def find_image_element_id_smart(prs_id, label):
-    """Cerca l'immagine ignorando spazi e maiuscole"""
     label_clean = label.strip().upper()
     try:
         prs = slides_service.presentations().get(presentationId=prs_id).execute()
@@ -139,12 +150,12 @@ def find_image_element_id_smart(prs_id, label):
                     current_desc = el['description'].strip().upper()
                     if current_desc == label_clean:
                         return el['objectId']
-    except Exception as e:
-        print(f"Errore ricerca ID: {e}")
+    except Exception:
+        pass
     return None
 
 def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_urls):
-    # 1. COPIA FILE
+    # COPIA FILE
     try:
         copy = drive_service.files().copy(
             fileId=template_id, 
@@ -156,7 +167,7 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_
         st.error(f"❌ Errore Drive Copy: {e}")
         return None
     
-    # 2. TESTI
+    # TESTI
     reqs = []
     if 'cover' in ai_data:
         reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': ai_data['cover'].get('title', 'Titolo')}})
@@ -171,8 +182,7 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_
     if reqs:
         slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
 
-    # 3. IMMAGINI (Usiamo gli URL già generati nell'anteprima)
-    # Mappa le etichette agli URL generati
+    # IMMAGINI
     url_map = {}
     if 'cover' in ai_data: url_map['IMG_COVER'] = pregenerated_urls.get('cover')
     if 'slides' in ai_data:
@@ -186,8 +196,8 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_
                 try:
                     slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': [req]}).execute()
                     time.sleep(0.5)
-                except Exception as e:
-                    st.error(f"Errore inserimento immagine {label}: {e}")
+                except Exception:
+                    pass
     
     return new_id
 
@@ -203,82 +213,98 @@ with col2:
     uploaded = st.file_uploader("Carica PPT", accept_multiple_files=True, type=['pptx'])
     
     # PULSANTE 1: ANALIZZA E GENERA ANTEPRIMA
-    if st.button("✨ Genera Anteprima (Senza Salvare)", type="primary"):
+    if st.button("✨ Genera Anteprima", type="primary"):
         if uploaded:
-            st.session_state.results = {} # Reset
+            st.session_state.results = {} 
             st.session_state.analysis_done = False
             
-            bar = st.progress(0)
-            for i, f in enumerate(uploaded):
-                fname = f.name.replace(".pptx", "") + "_ITA"
-                txt = extract_text_from_pptx(f)
-                
-                # 1. Genera Dati AI
-                data = brain_process(txt, selected_gemini, image_style)
-                
-                if data:
-                    # 2. Genera Immagini SUBITO per l'anteprima
-                    image_urls = {}
-                    
-                    # Cover
-                    if 'cover' in data:
-                        url = generate_image_url(data['cover']['image_prompt'], image_style)
-                        image_urls['cover'] = url
-                    
-                    # Slides
-                    if 'slides' in data:
-                        for idx, s in enumerate(data['slides']):
-                            url = generate_image_url(s['image_prompt'], image_style)
-                            image_urls[f'slide_{idx+1}'] = url
-                    
-                    # Salva tutto in session state
-                    st.session_state.results[fname] = {
-                        "ai_data": data,
-                        "image_urls": image_urls,
-                        "original_file": f.name
-                    }
-                bar.progress((i+1)/len(uploaded))
+            # --- STATUS CONTAINER: IL FEEDBACK VISIVO ---
+            status = st.status("Avvio motori...", expanded=True)
             
-            st.session_state.analysis_done = True
-            st.rerun() # Ricarica la pagina per mostrare i risultati
+            try:
+                for i, f in enumerate(uploaded):
+                    fname = f.name.replace(".pptx", "") + "_ITA"
+                    
+                    status.write(f"📖 Lettura file: **{f.name}**...")
+                    txt = extract_text_from_pptx(f)
+                    
+                    status.write(f"🧠 Generazione testi con **{selected_gemini}**...")
+                    data = brain_process(txt, selected_gemini, image_style)
+                    
+                    if data:
+                        image_urls = {}
+                        
+                        # Generazione Immagini con feedback
+                        if 'cover' in data:
+                            status.write("🎨 Pitturando la Copertina...")
+                            url = generate_image_url(data['cover']['image_prompt'], image_style)
+                            image_urls['cover'] = url
+                        
+                        if 'slides' in data:
+                            for idx, s in enumerate(data['slides']):
+                                status.write(f"🎨 Pitturando Slide {idx+1} di {len(data['slides'])}...")
+                                url = generate_image_url(s['image_prompt'], image_style)
+                                image_urls[f'slide_{idx+1}'] = url
+                        
+                        st.session_state.results[fname] = {
+                            "ai_data": data,
+                            "image_urls": image_urls,
+                            "original_file": f.name
+                        }
+                    else:
+                        status.error(f"Errore generazione testi per {fname}")
 
-# --- SEZIONE ANTEPRIMA (Si attiva dopo l'analisi) ---
+                status.update(label="✅ Anteprima Pronta! Scorri giù.", state="complete", expanded=False)
+                st.session_state.analysis_done = True
+                
+            except Exception as e:
+                status.update(label="❌ Errore critico", state="error")
+                st.error(f"Dettaglio errore: {e}")
+
+# --- SEZIONE ANTEPRIMA ---
 if st.session_state.analysis_done and st.session_state.results:
     st.divider()
-    st.header("🎨 Anteprima Generazione")
+    st.header("🎨 Anteprima")
+    st.info("Controlla i risultati. Se ti piacciono, clicca 'Salva' in fondo.")
     
     for fname, content in st.session_state.results.items():
         with st.expander(f"📂 File: {fname}", expanded=True):
             data = content['ai_data']
             urls = content['image_urls']
             
-            # Layout Cover
+            # Layout Visuale
             c1, c2 = st.columns([1, 1])
             with c1:
-                st.subheader("Cover")
+                st.subheader("Copertina")
+                st.markdown(f"**{data['cover'].get('title')}**")
+                st.caption(f"{data['cover'].get('subtitle')}")
+                
                 if 'cover' in urls:
-                    st.image(urls['cover'], caption=data['cover'].get('title'), use_container_width=True)
-                st.markdown(f"**Titolo:** {data['cover'].get('title')}")
-                st.markdown(f"**Slogan:** {data['cover'].get('subtitle')}")
-                st.caption(f"Prompt: {data['cover'].get('image_prompt')}")
+                    # SCARICAMENTO SICURO IMMAGINE
+                    img_data = get_image_bytes(urls['cover'])
+                    if img_data:
+                        st.image(img_data, use_container_width=True)
+                    else:
+                        st.warning("⚠️ Immagine non caricata (Link rotto o timeout)")
             
-            # Layout Slide (Esempio prime 2)
             with c2:
-                st.subheader("Slide 1 (Esempio)")
+                st.subheader("Esempio Slide 1")
                 if 'slides' in data and len(data['slides']) > 0:
                     s1 = data['slides'][0]
-                    if 'slide_1' in urls:
-                        st.image(urls['slide_1'], use_container_width=True)
                     st.markdown(f"**{s1.get('title')}**")
-                    st.caption(f"Prompt: {s1.get('image_prompt')}")
+                    if 'slide_1' in urls:
+                        img_data = get_image_bytes(urls['slide_1'])
+                        if img_data:
+                            st.image(img_data, use_container_width=True)
+                        else:
+                            st.warning("⚠️ Immagine non caricata")
 
-            # Mostra JSON completo se serve
-            with st.expander("Vedi Dati Grezzi (JSON)"):
+            with st.expander("Vedi Prompt Generati"):
                 st.json(data)
 
-    # --- PULSANTE FINALE DI SALVATAGGIO ---
+    # --- SALVATAGGIO ---
     st.divider()
-    if st.button("💾 Conferma tutto e Salva su Drive", type="primary", use_container_width=True):
+    if st.button("💾 Conferma e Salva su Drive", type="primary", use_container_width=True):
         progress_text = st.empty()
         bar = st.progress(0)
         
@@ -300,4 +326,4 @@ if st.session_state.analysis_done and st.session_state.results:
             
             bar.progress((i+1)/len(st.session_state.results))
         
-        st.success("Operazione Completata! Controlla il Drive.")
+        st.success("Tutto finito! Controlla il Drive.")
