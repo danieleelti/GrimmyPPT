@@ -8,7 +8,7 @@ import os
 import re
 import time
 import urllib.parse
-import requests  # <--- NUOVO: Serve per scaricare le immagini in modo sicuro
+import requests
 from io import BytesIO
 
 # --- CONFIGURAZIONE ---
@@ -18,7 +18,7 @@ st.set_page_config(page_title="Slide Monster: Visual Agent", page_icon="👁️"
 DEFAULT_TEMPLATE_ID = "1BHac-ciWsMCxjtNrv8RxB68LyDi9cZrV6VMWEeXCw5A" 
 DEFAULT_FOLDER_ID = "1wL1oxos7ISS03GzfW0db44XoAk3UocV0"
 
-# --- INIZIALIZZAZIONE SESSION STATE ---
+# --- SESSION STATE ---
 if "analysis_done" not in st.session_state:
     st.session_state.analysis_done = False
 if "results" not in st.session_state:
@@ -52,24 +52,22 @@ with st.sidebar:
     image_style = st.selectbox("Stile Immagini", ["Imagen 4 (High Fidelity)", "Flux Realism", "Illustrazione 3D"], index=0)
     
     st.divider()
-    st.subheader("🔍 Diagnostica")
-    if st.button("Analizza Etichette Template"):
+    if st.button("Diagnostica Template"):
         try:
-            with st.spinner("Scansione etichette..."):
+            with st.spinner("Scansione..."):
                 prs = slides_service.presentations().get(presentationId=DEFAULT_TEMPLATE_ID).execute()
                 found_tags = []
                 for slide in prs.get('slides', []):
                     for el in slide.get('pageElements', []):
                         if 'description' in el:
                             found_tags.append(f"Slide {slide['objectId'][-3:]}: {el['description']}")
-                
                 if found_tags:
-                    st.success(f"Trovate {len(found_tags)} etichette:")
+                    st.success(f"Etichette trovate: {len(found_tags)}")
                     st.code("\n".join(found_tags))
                 else:
-                    st.error("❌ NESSUNA etichetta trovata!")
+                    st.error("❌ Nessuna etichetta trovata nel template.")
         except Exception as e:
-            st.error(f"Errore scansione: {e}")
+            st.error(f"Errore: {e}")
 
 # --- FUNZIONI ---
 
@@ -120,24 +118,36 @@ def brain_process(text, model_name, style):
         resp = ai.generate_content(f"{prompt}\n\nTESTO:\n{text}", generation_config={"response_mime_type": "application/json"})
         if not resp.text: return None
         return json.loads(clean_json_text(resp.text))
-    except Exception as e:
+    except Exception:
         return None
 
 def generate_image_url(prompt, style_choice):
-    # Encoding sicuro per evitare crash
     safe_prompt = prompt.replace("\n", " ").strip()
     encoded_prompt = urllib.parse.quote(safe_prompt)
     seed = os.urandom(2).hex()
+    # Aggiungiamo 'nologo' e un seed casuale per forzare una nuova generazione
     return f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){encoded_prompt}?width=1920&height=1080&model=flux&nologo=true&seed={seed}"
 
 def get_image_bytes(url):
-    """Scarica l'immagine in modo sicuro senza far crashare Streamlit"""
-    try:
-        response = requests.get(url, timeout=10) # Timeout di 10 secondi
-        if response.status_code == 200:
-            return BytesIO(response.content)
-    except Exception:
-        pass
+    """Scarica l'immagine con Retry, User-Agent e Timeout Lungo"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
+    # Tentiamo 3 volte prima di arrenderci
+    for attempt in range(3):
+        try:
+            # Timeout alzato a 30 secondi (Flux è lento a volte)
+            response = requests.get(url, headers=headers, timeout=30)
+            if response.status_code == 200:
+                return BytesIO(response.content)
+            else:
+                # Se il server dà errore, aspettiamo un attimo
+                time.sleep(2)
+        except Exception:
+            # Se va in timeout, aspettiamo e riproviamo
+            time.sleep(2)
+            
     return None
 
 def find_image_element_id_smart(prs_id, label):
@@ -147,15 +157,13 @@ def find_image_element_id_smart(prs_id, label):
         for slide in prs.get('slides', []):
             for el in slide.get('pageElements', []):
                 if 'description' in el:
-                    current_desc = el['description'].strip().upper()
-                    if current_desc == label_clean:
+                    if el['description'].strip().upper() == label_clean:
                         return el['objectId']
     except Exception:
         pass
     return None
 
 def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_urls):
-    # COPIA FILE
     try:
         copy = drive_service.files().copy(
             fileId=template_id, 
@@ -164,10 +172,9 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_
         ).execute()
         new_id = copy.get('id')
     except Exception as e:
-        st.error(f"❌ Errore Drive Copy: {e}")
+        st.error(f"❌ Errore Drive: {e}")
         return None
     
-    # TESTI
     reqs = []
     if 'cover' in ai_data:
         reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': ai_data['cover'].get('title', 'Titolo')}})
@@ -195,14 +202,14 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_
                 req = {'replaceImage': {'imageObjectId': el_id, 'imageReplaceMethod': 'CENTER_CROP', 'url': url}}
                 try:
                     slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': [req]}).execute()
-                    time.sleep(0.5)
+                    time.sleep(1) # Pausa tattica per Google
                 except Exception:
                     pass
     
     return new_id
 
-# --- INTERFACCIA PRINCIPALE ---
-st.title("👁️ Slide Monster: Visual Preview")
+# --- INTERFACCIA ---
+st.title("👁️ Slide Monster: Visual Agent (Robust)")
 
 col1, col2 = st.columns([1, 2])
 with col1:
@@ -212,38 +219,37 @@ with col1:
 with col2:
     uploaded = st.file_uploader("Carica PPT", accept_multiple_files=True, type=['pptx'])
     
-    # PULSANTE 1: ANALIZZA E GENERA ANTEPRIMA
     if st.button("✨ Genera Anteprima", type="primary"):
         if uploaded:
             st.session_state.results = {} 
             st.session_state.analysis_done = False
             
-            # --- STATUS CONTAINER: IL FEEDBACK VISIVO ---
             status = st.status("Avvio motori...", expanded=True)
             
             try:
                 for i, f in enumerate(uploaded):
                     fname = f.name.replace(".pptx", "") + "_ITA"
-                    
-                    status.write(f"📖 Lettura file: **{f.name}**...")
+                    status.write(f"📖 Analisi file: **{f.name}**...")
                     txt = extract_text_from_pptx(f)
                     
-                    status.write(f"🧠 Generazione testi con **{selected_gemini}**...")
+                    status.write(f"🧠 Scrittura testi con {selected_gemini}...")
                     data = brain_process(txt, selected_gemini, image_style)
                     
                     if data:
                         image_urls = {}
                         
-                        # Generazione Immagini con feedback
                         if 'cover' in data:
-                            status.write("🎨 Pitturando la Copertina...")
+                            status.write("🎨 Generazione Copertina (Attendere)...")
                             url = generate_image_url(data['cover']['image_prompt'], image_style)
+                            # Pre-warm: Facciamo una richiesta a vuoto per far partire la generazione sul server
+                            requests.get(url, timeout=5) 
                             image_urls['cover'] = url
                         
                         if 'slides' in data:
                             for idx, s in enumerate(data['slides']):
-                                status.write(f"🎨 Pitturando Slide {idx+1} di {len(data['slides'])}...")
+                                status.write(f"🎨 Generazione Slide {idx+1}...")
                                 url = generate_image_url(s['image_prompt'], image_style)
+                                requests.get(url, timeout=5) # Pre-warm
                                 image_urls[f'slide_{idx+1}'] = url
                         
                         st.session_state.results[fname] = {
@@ -252,27 +258,25 @@ with col2:
                             "original_file": f.name
                         }
                     else:
-                        status.error(f"Errore generazione testi per {fname}")
+                        status.error(f"Errore AI su {fname}")
 
                 status.update(label="✅ Anteprima Pronta! Scorri giù.", state="complete", expanded=False)
                 st.session_state.analysis_done = True
                 
             except Exception as e:
                 status.update(label="❌ Errore critico", state="error")
-                st.error(f"Dettaglio errore: {e}")
+                st.error(f"Dettaglio: {e}")
 
-# --- SEZIONE ANTEPRIMA ---
+# --- ANTEPRIMA ---
 if st.session_state.analysis_done and st.session_state.results:
     st.divider()
     st.header("🎨 Anteprima")
-    st.info("Controlla i risultati. Se ti piacciono, clicca 'Salva' in fondo.")
     
     for fname, content in st.session_state.results.items():
         with st.expander(f"📂 File: {fname}", expanded=True):
             data = content['ai_data']
             urls = content['image_urls']
             
-            # Layout Visuale
             c1, c2 = st.columns([1, 1])
             with c1:
                 st.subheader("Copertina")
@@ -280,12 +284,12 @@ if st.session_state.analysis_done and st.session_state.results:
                 st.caption(f"{data['cover'].get('subtitle')}")
                 
                 if 'cover' in urls:
-                    # SCARICAMENTO SICURO IMMAGINE
-                    img_data = get_image_bytes(urls['cover'])
-                    if img_data:
-                        st.image(img_data, use_container_width=True)
-                    else:
-                        st.warning("⚠️ Immagine non caricata (Link rotto o timeout)")
+                    with st.spinner("Scaricamento immagine..."):
+                        img_data = get_image_bytes(urls['cover'])
+                        if img_data:
+                            st.image(img_data, use_container_width=True)
+                        else:
+                            st.warning("⚠️ Immagine in elaborazione (riprova a ricaricare)")
             
             with c2:
                 st.subheader("Esempio Slide 1")
@@ -297,33 +301,19 @@ if st.session_state.analysis_done and st.session_state.results:
                         if img_data:
                             st.image(img_data, use_container_width=True)
                         else:
-                            st.warning("⚠️ Immagine non caricata")
+                            st.warning("⚠️ Immagine non disponibile")
 
-            with st.expander("Vedi Prompt Generati"):
+            with st.expander("Vedi Prompt"):
                 st.json(data)
 
-    # --- SALVATAGGIO ---
     st.divider()
     if st.button("💾 Conferma e Salva su Drive", type="primary", use_container_width=True):
-        progress_text = st.empty()
-        bar = st.progress(0)
-        
+        progress = st.progress(0)
         for i, (fname, content) in enumerate(st.session_state.results.items()):
-            progress_text.write(f"Scrittura file **{fname}** su Drive...")
-            
-            res_id = worker_bot_finalize(
-                tmpl, 
-                fold, 
-                fname, 
-                content['ai_data'], 
-                content['image_urls']
-            )
-            
+            res_id = worker_bot_finalize(tmpl, fold, fname, content['ai_data'], content['image_urls'])
             if res_id:
                 st.toast(f"✅ Salvato: {fname}")
             else:
-                st.error(f"❌ Errore salvataggio: {fname}")
-            
-            bar.progress((i+1)/len(st.session_state.results))
-        
-        st.success("Tutto finito! Controlla il Drive.")
+                st.error(f"❌ Errore salvataggio {fname}")
+            progress.progress((i+1)/len(st.session_state.results))
+        st.success("Tutto finito!")
