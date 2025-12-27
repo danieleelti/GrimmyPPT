@@ -10,18 +10,23 @@ import time
 import urllib.parse
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Slide Monster: Sherlock Mode", page_icon="🕵️‍♂️", layout="wide")
+st.set_page_config(page_title="Slide Monster: Visual Agent", page_icon="👁️", layout="wide")
 
-# --- I TUOI ID (DRIVE CONDIVISO) ---
+# --- I TUOI ID ---
 DEFAULT_TEMPLATE_ID = "1BHac-ciWsMCxjtNrv8RxB68LyDi9cZrV6VMWEeXCw5A" 
 DEFAULT_FOLDER_ID = "1wL1oxos7ISS03GzfW0db44XoAk3UocV0"
+
+# --- INIZIALIZZAZIONE SESSION STATE ---
+if "analysis_done" not in st.session_state:
+    st.session_state.analysis_done = False
+if "results" not in st.session_state:
+    st.session_state.results = {} # Conterrà i dati generati
 
 # --- LOGIN ---
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     if "gcp_service_account" in st.secrets and "json_content" in st.secrets["gcp_service_account"]:
-        json_str = st.secrets["gcp_service_account"]["json_content"]
-        service_account_info = json.loads(json_str)
+        service_account_info = json.loads(st.secrets["gcp_service_account"]["json_content"])
     else:
         service_account_info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
     
@@ -38,11 +43,31 @@ except Exception as e:
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("🕵️‍♂️ Debug Mode")
+    st.header("🧠 Configurazione")
     models = ["models/gemini-3-pro-preview", "models/gemini-1.5-pro", "models/gemini-1.5-flash"]
     selected_gemini = st.selectbox("Modello Attivo", models, index=0)
     st.divider()
-    image_style = st.selectbox("Stile Immagini", ["Imagen 4 (High Fidelity)", "Flux Realism"], index=0)
+    image_style = st.selectbox("Stile Immagini", ["Imagen 4 (High Fidelity)", "Flux Realism", "Illustrazione 3D"], index=0)
+    
+    st.divider()
+    st.subheader("🔍 Diagnostica")
+    if st.button("Analizza Etichette Template"):
+        try:
+            st.write("Scansione in corso...")
+            prs = slides_service.presentations().get(presentationId=DEFAULT_TEMPLATE_ID).execute()
+            found_tags = []
+            for slide in prs.get('slides', []):
+                for el in slide.get('pageElements', []):
+                    if 'description' in el:
+                        found_tags.append(f"Slide {slide['objectId'][-3:]}: {el['description']}")
+            
+            if found_tags:
+                st.success(f"Trovate {len(found_tags)} etichette:")
+                st.code("\n".join(found_tags))
+            else:
+                st.error("❌ NESSUNA etichetta trovata! Il robot non sa dove mettere le foto.")
+        except Exception as e:
+            st.error(f"Errore scansione: {e}")
 
 # --- FUNZIONI ---
 
@@ -74,7 +99,7 @@ def brain_process(text, model_name, style):
     INPUT: Testo grezzo estratto da slide.
     OUTPUT: JSON per riempire un template (Cover + 5 slide).
     REGOLE: SCRIVI SOLO IN ITALIANO. Cover: Sottotitolo = slogan.
-    Image Prompts: Descrizioni in INGLESE (brevi e visive). Stile: {style_prompt}.
+    Image Prompts: Descrizioni in INGLESE (brevi, visive, dettagliate). Stile: {style_prompt}.
     STRUTTURA JSON:
     {{
         "cover": {{ "title": "Titolo", "subtitle": "Slogan", "image_prompt": "..." }},
@@ -103,33 +128,22 @@ def generate_image_url(prompt, style_choice):
     seed = os.urandom(2).hex()
     return f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){encoded_prompt}?width=1920&height=1080&model=flux&nologo=true&seed={seed}"
 
-def find_image_element_id_smart(prs_id, label, debug_container):
+def find_image_element_id_smart(prs_id, label):
     """Cerca l'immagine ignorando spazi e maiuscole"""
     label_clean = label.strip().upper()
-    
     try:
         prs = slides_service.presentations().get(presentationId=prs_id).execute()
-        found_labels = []
-        
         for slide in prs.get('slides', []):
             for el in slide.get('pageElements', []):
-                # Cerchiamo in "description" (Alt Text)
                 if 'description' in el:
                     current_desc = el['description'].strip().upper()
-                    found_labels.append(current_desc) # Salviamo per il report
-                    
                     if current_desc == label_clean:
                         return el['objectId']
-        
-        # Se siamo qui, non l'ha trovata. Stampiamo cosa ha trovato per aiutare.
-        with debug_container:
-            st.warning(f"🔎 Analisi Slide: Cercavo **'{label}'**, ma nel file ho trovato solo queste etichette: {found_labels}")
-            
     except Exception as e:
         print(f"Errore ricerca ID: {e}")
     return None
 
-def worker_bot(template_id, folder_id, filename, ai_data, style_choice, log_container):
+def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_urls):
     # 1. COPIA FILE
     try:
         copy = drive_service.files().copy(
@@ -155,78 +169,135 @@ def worker_bot(template_id, folder_id, filename, ai_data, style_choice, log_cont
             reqs.append({'replaceAllText': {'containsText': {'text': f'{{{{BODY_{idx}}}}}'}, 'replaceText': s.get('body', '')}})
             
     if reqs:
-        try:
-            slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
-        except Exception as e:
-            st.warning(f"Testi parziali: {e}")
+        slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
 
-    # 3. IMMAGINI (Con LOGGING POTENZIATO)
-    img_map = {}
-    if 'cover' in ai_data: img_map['IMG_COVER'] = ai_data['cover'].get('image_prompt', '')
+    # 3. IMMAGINI (Usiamo gli URL già generati nell'anteprima)
+    # Mappa le etichette agli URL generati
+    url_map = {}
+    if 'cover' in ai_data: url_map['IMG_COVER'] = pregenerated_urls.get('cover')
     if 'slides' in ai_data:
-        for i, s in enumerate(ai_data['slides']): img_map[f'IMG_{i+1}'] = s.get('image_prompt', '')
+        for i, s in enumerate(ai_data['slides']): url_map[f'IMG_{i+1}'] = pregenerated_urls.get(f'slide_{i+1}')
         
-    for label, prompt in img_map.items():
-        if prompt:
-            # Qui usiamo la ricerca "Smart" che ignora gli spazi
-            el_id = find_image_element_id_smart(new_id, label, log_container)
-            
+    for label, url in url_map.items():
+        if url:
+            el_id = find_image_element_id_smart(new_id, label)
             if el_id:
-                url = generate_image_url(prompt, style_choice)
-                if url.startswith("https://"):
-                    req = {'replaceImage': {'imageObjectId': el_id, 'imageReplaceMethod': 'CENTER_CROP', 'url': url}}
-                    try:
-                        slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': [req]}).execute()
-                        time.sleep(0.5)
-                        with log_container: st.success(f"✅ Immagine **{label}** sostituita correttamente!")
-                    except Exception as e:
-                        with log_container: st.error(f"❌ Errore API Google su {label}: {e}")
-            else:
-                # Se non trova l'ID, find_image_element_id_smart ha già stampato il warning con la lista
-                pass
-        else:
-            with log_container: st.warning(f"⚠️ L'AI non ha generato un prompt per **{label}**.")
-
+                req = {'replaceImage': {'imageObjectId': el_id, 'imageReplaceMethod': 'CENTER_CROP', 'url': url}}
+                try:
+                    slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': [req]}).execute()
+                    time.sleep(0.5)
+                except Exception as e:
+                    st.error(f"Errore inserimento immagine {label}: {e}")
+    
     return new_id
 
-# --- INTERFACCIA ---
-st.title("🕵️‍♂️ Slide Monster (Sherlock Edition)")
+# --- INTERFACCIA PRINCIPALE ---
+st.title("👁️ Slide Monster: Visual Preview")
 
 col1, col2 = st.columns([1, 2])
 with col1:
-    st.info("Configurazione Attiva")
     tmpl = st.text_input("ID Template", value=DEFAULT_TEMPLATE_ID)
     fold = st.text_input("ID Cartella Output", value=DEFAULT_FOLDER_ID)
-    st.success(f"🤖 Brain: {selected_gemini}")
 
 with col2:
     uploaded = st.file_uploader("Carica PPT", accept_multiple_files=True, type=['pptx'])
-    if st.button("🚀 ELABORA (ANALISI)", type="primary"):
+    
+    # PULSANTE 1: ANALIZZA E GENERA ANTEPRIMA
+    if st.button("✨ Genera Anteprima (Senza Salvare)", type="primary"):
         if uploaded:
+            st.session_state.results = {} # Reset
+            st.session_state.analysis_done = False
+            
             bar = st.progress(0)
-            log = st.container()
             for i, f in enumerate(uploaded):
                 fname = f.name.replace(".pptx", "") + "_ITA"
-                try:
-                    txt = extract_text_from_pptx(f)
+                txt = extract_text_from_pptx(f)
+                
+                # 1. Genera Dati AI
+                data = brain_process(txt, selected_gemini, image_style)
+                
+                if data:
+                    # 2. Genera Immagini SUBITO per l'anteprima
+                    image_urls = {}
                     
-                    with log: st.write(f"🧠 Analisi **{fname}**...")
-                    data = brain_process(txt, selected_gemini, image_style)
+                    # Cover
+                    if 'cover' in data:
+                        url = generate_image_url(data['cover']['image_prompt'], image_style)
+                        image_urls['cover'] = url
                     
-                    if data:
-                        # DEBUG: Mostriamo cosa ha pensato l'AI
-                        with st.expander(f"👀 Vedi cosa ha generato l'AI per {fname}"):
-                            st.json(data)
-                        
-                        with log: st.write(f"💾 Scrittura e sostituzione...")
-                        res = worker_bot(tmpl, fold, fname, data, image_style, log)
-                        
-                        if res: 
-                            st.toast(f"✅ Fatto: {fname}")
-                            log.success(f"✅ FILE COMPLETATO: {fname}")
-                    else:
-                        log.error(f"Errore AI su {fname}")
-                except Exception as e:
-                    log.error(f"Critico: {e}")
+                    # Slides
+                    if 'slides' in data:
+                        for idx, s in enumerate(data['slides']):
+                            url = generate_image_url(s['image_prompt'], image_style)
+                            image_urls[f'slide_{idx+1}'] = url
+                    
+                    # Salva tutto in session state
+                    st.session_state.results[fname] = {
+                        "ai_data": data,
+                        "image_urls": image_urls,
+                        "original_file": f.name
+                    }
                 bar.progress((i+1)/len(uploaded))
-            st.success("Analisi completata!")
+            
+            st.session_state.analysis_done = True
+            st.rerun() # Ricarica la pagina per mostrare i risultati
+
+# --- SEZIONE ANTEPRIMA (Si attiva dopo l'analisi) ---
+if st.session_state.analysis_done and st.session_state.results:
+    st.divider()
+    st.header("🎨 Anteprima Generazione")
+    
+    for fname, content in st.session_state.results.items():
+        with st.expander(f"📂 File: {fname}", expanded=True):
+            data = content['ai_data']
+            urls = content['image_urls']
+            
+            # Layout Cover
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                st.subheader("Cover")
+                if 'cover' in urls:
+                    st.image(urls['cover'], caption=data['cover'].get('title'), use_container_width=True)
+                st.markdown(f"**Titolo:** {data['cover'].get('title')}")
+                st.markdown(f"**Slogan:** {data['cover'].get('subtitle')}")
+                st.caption(f"Prompt: {data['cover'].get('image_prompt')}")
+            
+            # Layout Slide (Esempio prime 2)
+            with c2:
+                st.subheader("Slide 1 (Esempio)")
+                if 'slides' in data and len(data['slides']) > 0:
+                    s1 = data['slides'][0]
+                    if 'slide_1' in urls:
+                        st.image(urls['slide_1'], use_container_width=True)
+                    st.markdown(f"**{s1.get('title')}**")
+                    st.caption(f"Prompt: {s1.get('image_prompt')}")
+
+            # Mostra JSON completo se serve
+            with st.expander("Vedi Dati Grezzi (JSON)"):
+                st.json(data)
+
+    # --- PULSANTE FINALE DI SALVATAGGIO ---
+    st.divider()
+    if st.button("💾 Conferma tutto e Salva su Drive", type="primary", use_container_width=True):
+        progress_text = st.empty()
+        bar = st.progress(0)
+        
+        for i, (fname, content) in enumerate(st.session_state.results.items()):
+            progress_text.write(f"Scrittura file **{fname}** su Drive...")
+            
+            res_id = worker_bot_finalize(
+                tmpl, 
+                fold, 
+                fname, 
+                content['ai_data'], 
+                content['image_urls']
+            )
+            
+            if res_id:
+                st.toast(f"✅ Salvato: {fname}")
+            else:
+                st.error(f"❌ Errore salvataggio: {fname}")
+            
+            bar.progress((i+1)/len(st.session_state.results))
+        
+        st.success("Operazione Completata! Controlla il Drive.")
