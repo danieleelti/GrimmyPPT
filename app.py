@@ -2,33 +2,37 @@ import streamlit as st
 import google.generativeai as genai
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from google.cloud import storage
+import vertexai
+from vertexai.preview.vision_models import ImageGenerationModel
 from pptx import Presentation
 import json
 import os
-import re
 import time
-import urllib.parse
-import requests
-from io import BytesIO
+import uuid
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Slide Monster: Director Mode", page_icon="🎬", layout="wide")
+st.set_page_config(page_title="Slide Monster: Enterprise Edition", page_icon="🦖", layout="wide")
 
-# --- I TUOI ID ---
+# ======================================================
+# ⚙️ I TUOI DATI (INSERITI AUTOMATICAMENTE)
+# ======================================================
+GCP_PROJECT_ID = "gen-lang-client-0247086002"  # Il tuo ID Progetto
+GCS_BUCKET_NAME = "bucket_grimmy"              # Il tuo Bucket
+GCP_LOCATION = "us-central1"                   # Regione Standard per Imagen
+# ======================================================
+
 DEFAULT_TEMPLATE_ID = "1BHac-ciWsMCxjtNrv8RxB68LyDi9cZrV6VMWEeXCw5A" 
 DEFAULT_FOLDER_ID = "1wL1oxos7ISS03GzfW0db44XoAk3UocV0"
 
 # --- GESTIONE STATO ---
-if "app_state" not in st.session_state:
-    st.session_state.app_state = "UPLOAD"
-if "draft_data" not in st.session_state:
-    st.session_state.draft_data = {}
-if "final_images" not in st.session_state:
-    st.session_state.final_images = {} 
+if "app_state" not in st.session_state: st.session_state.app_state = "UPLOAD"
+if "draft_data" not in st.session_state: st.session_state.draft_data = {}
+if "final_images" not in st.session_state: st.session_state.final_images = {} 
 
-# --- LOGIN ---
+# --- INIZIALIZZAZIONE SERVIZI GOOGLE ---
 try:
-    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+    # 1. Recupera Credenziali (dal Secrets di Streamlit)
     if "gcp_service_account" in st.secrets and "json_content" in st.secrets["gcp_service_account"]:
         service_account_info = json.loads(st.secrets["gcp_service_account"]["json_content"])
     else:
@@ -36,40 +40,41 @@ try:
     
     creds = service_account.Credentials.from_service_account_info(
         service_account_info,
-        scopes=['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/presentations']
+        scopes=['https://www.googleapis.com/auth/cloud-platform']
     )
+
+    # 2. Setup Gemini (Testo)
+    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"]) 
+    
+    # 3. Setup Drive & Slides API
     drive_service = build('drive', 'v3', credentials=creds)
     slides_service = build('slides', 'v1', credentials=creds)
+    
+    # 4. Setup Vertex AI (Immagini) & Storage (Bucket)
+    vertexai.init(project=GCP_PROJECT_ID, location=GCP_LOCATION, credentials=creds)
+    storage_client = storage.Client(credentials=creds, project=GCP_PROJECT_ID)
+    bucket = storage_client.bucket(GCS_BUCKET_NAME)
 
 except Exception as e:
-    st.error(f"⚠️ Errore Secrets: {e}")
+    st.error(f"⚠️ Errore critico inizializzazione: {e}")
     st.stop()
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("🎬 Regia")
-    models = ["models/gemini-3-pro-preview", "models/gemini-1.5-pro", "models/gemini-1.5-flash"]
-    selected_gemini = st.selectbox("Modello Attivo", models, index=0)
+    st.header("🦖 Slide Monster")
+    st.caption(f"Project: {GCP_PROJECT_ID}")
+    st.caption(f"Bucket: {GCS_BUCKET_NAME}")
     st.divider()
-    image_style = st.selectbox("Stile Immagini", ["Imagen 4 (High Fidelity)", "Flux Realism", "Illustrazione 3D"], index=0)
-    
-    st.divider()
-    if st.button("🔄 Nuova Sessione"):
+    if st.button("🔄 Nuova Sessione (Reset)"):
         st.session_state.app_state = "UPLOAD"
         st.session_state.draft_data = {}
         st.session_state.final_images = {}
         st.rerun()
 
-# --- FUNZIONI ---
-
-def clean_json_text(text):
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(json)?", "", text, flags=re.MULTILINE)
-        text = re.sub(r"```$", "", text, flags=re.MULTILINE)
-    return text.strip()
+# --- FUNZIONI INTELLIGENTI ---
 
 def extract_text_from_pptx(file_obj):
+    """Estrae il testo dal file PowerPoint caricato"""
     prs = Presentation(file_obj)
     full_text = []
     for slide in prs.slides:
@@ -80,242 +85,267 @@ def extract_text_from_pptx(file_obj):
         full_text.append(" | ".join(s_txt))
     return "\n---\n".join(full_text)
 
-def brain_process(text, model_name, style):
-    style_prompt = "photorealistic, cinematic lighting, 8k"
-    if "Imagen 4" in style:
-        style_prompt = "award winning photography, Imagen 4 style, hyper-realistic, 8k resolution"
+def brain_process(text):
+    """Usa Gemini per scrivere i testi e i prompt"""
+    prompt = """
+    Sei un Creative Director esperto. 
+    Analizza il testo fornito e struttura una presentazione efficace.
     
-    prompt = f"""
-    Sei un Senior Copywriter italiano. Riscrivi i contenuti di questa presentazione.
-    INPUT: Testo grezzo estratto da slide.
-    OUTPUT: JSON per riempire un template (Cover + 5 slide).
-    REGOLE: SCRIVI SOLO IN ITALIANO. Cover: Sottotitolo = slogan.
-    Image Prompts: Descrizioni in INGLESE (brevi, visive, dettagliate). Stile: {style_prompt}.
-    STRUTTURA JSON:
-    {{
-        "cover": {{ "title": "Titolo", "subtitle": "Slogan", "image_prompt": "..." }},
+    OUTPUT RICHIESTO (JSON):
+    {
+        "cover": { "title": "Titolo Accattivante", "subtitle": "Slogan", "image_prompt": "Descrizione visiva dettagliata in INGLESE per la copertina" },
         "slides": [
-            {{ "id": 1, "title": "...", "body": "...", "image_prompt": "..." }},
-            {{ "id": 2, "title": "...", "body": "...", "image_prompt": "..." }},
-            {{ "id": 3, "title": "...", "body": "...", "image_prompt": "..." }},
-            {{ "id": 4, "title": "...", "body": "...", "image_prompt": "..." }},
-            {{ "id": 5, "title": "...", "body": "...", "image_prompt": "..." }}
+            { "id": 1, "title": "Titolo Slide 1", "body": "Contenuto sintetico (max 30 parole)", "image_prompt": "Descrizione visiva in INGLESE" },
+            { "id": 2, "title": "Titolo Slide 2", "body": "Contenuto sintetico", "image_prompt": "Descrizione visiva in INGLESE" },
+            { "id": 3, "title": "Titolo Slide 3", "body": "Contenuto sintetico", "image_prompt": "Descrizione visiva in INGLESE" },
+            { "id": 4, "title": "Titolo Slide 4", "body": "Contenuto sintetico", "image_prompt": "Descrizione visiva in INGLESE" },
+            { "id": 5, "title": "Titolo Slide 5", "body": "Contenuto sintetico", "image_prompt": "Descrizione visiva in INGLESE" }
         ]
-    }}
+    }
     """
-    ai = genai.GenerativeModel(model_name)
+    model = genai.GenerativeModel("models/gemini-1.5-pro")
     try:
-        resp = ai.generate_content(f"{prompt}\n\nTESTO:\n{text}", generation_config={"response_mime_type": "application/json"})
-        if not resp.text: return None
-        return json.loads(clean_json_text(resp.text))
-    except Exception:
+        resp = model.generate_content(f"{prompt}\n\nTESTO SORGENTE:\n{text}", generation_config={"response_mime_type": "application/json"})
+        return json.loads(resp.text)
+    except Exception as e:
+        st.error(f"Errore Gemini: {e}")
         return None
 
-def generate_image_url(prompt, style_choice):
-    # 1. Pulizia Nucleare: Rimuove QUALSIASI carattere di controllo (newline, tab, ecc)
-    # Usa Regex per tenere solo caratteri stampabili standard se necessario, ma strip() solitamente basta se usato bene
-    clean_prompt = str(prompt).strip()
-    clean_prompt = " ".join(clean_prompt.split()) # Rimuove doppi spazi e newline interni
-    
-    # 2. Encoding sicuro
-    encoded_prompt = urllib.parse.quote(clean_prompt)
-    seed = os.urandom(2).hex()
-    
-    # 3. Costruzione URL manuale senza f-string complesse che potrebbero nascondere caratteri
-    base_url = "[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/)"
-    params = f"?width=1920&height=1080&model=flux&nologo=true&seed={seed}"
-    full_url = base_url + encoded_prompt + params
-    
-    return full_url.strip() # Strip finale per sicurezza
-
-def get_image_bytes(url):
-    """Scarica con pulizia preventiva dell'URL"""
-    headers = {"User-Agent": "Mozilla/5.0"}
-    
-    # PULIZIA PREVENTIVA URL (Il fix per il tuo errore)
-    if url:
-        # Rimuove caratteri invisibili iniziali che causano "No connection adapters"
-        url = url.strip()
-        # Se per caso c'è spazzatura prima dell'http, la togliamo
-        if "http" in url and not url.startswith("http"):
-            idx = url.find("http")
-            url = url[idx:]
-    
+def generate_and_upload_imagen(prompt):
+    """
+    1. Genera immagine con Imagen 3 (Vertex AI)
+    2. Carica l'immagine nel Bucket Pubblico
+    3. Restituisce il link pubblico
+    """
     try:
-        response = requests.get(url, headers=headers, timeout=20)
-        response.raise_for_status() 
-        return BytesIO(response.content), None
-    except requests.exceptions.InvalidSchema as e:
-        # Questo cattura l'errore "No connection adapters"
-        # Mostriamo il REPR dell'URL per vedere i caratteri nascosti (debug)
-        return None, f"URL Invalido (Caratteri nascosti?): {repr(url)}"
+        # A. Generazione con Imagen
+        model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-001")
+        
+        images = model.generate_images(
+            prompt=prompt,
+            number_of_images=1,
+            language="en",
+            aspect_ratio="16:9",
+            safety_filter_level="block_some",
+            person_generation="allow_adult"
+        )
+        
+        if not images:
+            return None, "Nessuna immagine generata (Filtro sicurezza?)"
+        
+        # B. Salvataggio su Bucket
+        # Creiamo un nome file unico
+        filename = f"img_{uuid.uuid4()}.png"
+        blob = bucket.blob(filename)
+        
+        # Carichiamo i dati
+        blob.upload_from_string(images[0]._image_bytes, content_type="image/png")
+        
+        # C. Costruzione URL Pubblico
+        # Dato che il bucket è "allUsers = Viewer", questo link funziona ovunque
+        public_url = f"https://storage.googleapis.com/{GCS_BUCKET_NAME}/{filename}"
+        
+        return public_url, None
+        
     except Exception as e:
         return None, str(e)
 
 def find_image_element_id_smart(prs_id, label):
+    """Trova l'ID dell'elemento immagine nel Template cercando nel Testo Alternativo"""
     label_clean = label.strip().upper()
     try:
         prs = slides_service.presentations().get(presentationId=prs_id).execute()
         for slide in prs.get('slides', []):
             for el in slide.get('pageElements', []):
-                if 'description' in el:
-                    if el['description'].strip().upper() == label_clean:
-                        return el['objectId']
-    except Exception: pass
+                # Cerchiamo in 'description' che corrisponde al Testo Alternativo
+                if 'description' in el and el['description'].strip().upper() == label_clean:
+                    return el['objectId']
+    except Exception as e:
+        print(f"Errore ricerca ID: {e}")
     return None
 
-def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_urls):
+def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map):
+    """Assembla tutto: Copia Template -> Sostituisce Testi -> Sostituisce Immagini"""
     try:
+        # 1. Copia Template
         copy = drive_service.files().copy(
             fileId=template_id, body={'name': filename, 'parents': [folder_id]}, supportsAllDrives=True
         ).execute()
         new_id = copy.get('id')
-    except Exception as e:
-        st.error(f"❌ Errore Drive Copy: {e}")
-        return None
-    
-    reqs = []
-    if 'cover' in ai_data:
-        reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': ai_data['cover'].get('title', 'Titolo')}})
-        reqs.append({'replaceAllText': {'containsText': {'text': '{{SUBTITLE}}'}, 'replaceText': ai_data['cover'].get('subtitle', '')}})
-    
-    if 'slides' in ai_data:
-        for i, s in enumerate(ai_data['slides']):
-            idx = i + 1
-            reqs.append({'replaceAllText': {'containsText': {'text': f'{{{{TITLE_{idx}}}}}'}, 'replaceText': s.get('title', '')}})
-            reqs.append({'replaceAllText': {'containsText': {'text': f'{{{{BODY_{idx}}}}}'}, 'replaceText': s.get('body', '')}})
-    if reqs:
-        slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
-
-    # IMMAGINI
-    url_map = {}
-    if 'cover' in ai_data: url_map['IMG_COVER'] = pregenerated_urls.get('cover')
-    if 'slides' in ai_data:
-        for i, s in enumerate(ai_data['slides']): url_map[f'IMG_{i+1}'] = pregenerated_urls.get(f'slide_{i+1}')
         
-    for label, url in url_map.items():
-        if url:
-            url = url.strip() # Pulizia finale
-            if url.startswith("http"):
+        # 2. Sostituzione Testi (Batch Update)
+        reqs = []
+        if 'cover' in ai_data:
+            reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': ai_data['cover'].get('title', '')}})
+            reqs.append({'replaceAllText': {'containsText': {'text': '{{SUBTITLE}}'}, 'replaceText': ai_data['cover'].get('subtitle', '')}})
+        
+        if 'slides' in ai_data:
+            for i, s in enumerate(ai_data['slides']):
+                idx = i + 1
+                reqs.append({'replaceAllText': {'containsText': {'text': f'{{{{TITLE_{idx}}}}}'}, 'replaceText': s.get('title', '')}})
+                reqs.append({'replaceAllText': {'containsText': {'text': f'{{{{BODY_{idx}}}}}'}, 'replaceText': s.get('body', '')}})
+                
+        if reqs:
+            slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
+
+        # 3. Sostituzione Immagini (Una per una)
+        for label, url in urls_map.items():
+            if url:
                 el_id = find_image_element_id_smart(new_id, label)
                 if el_id:
                     req = {'replaceImage': {'imageObjectId': el_id, 'imageReplaceMethod': 'CENTER_CROP', 'url': url}}
                     try:
                         slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': [req]}).execute()
-                        time.sleep(0.5)
-                    except Exception: pass
-    return new_id
+                        time.sleep(0.5) # Pausa tattica per non sovraccaricare le API
+                    except Exception as e:
+                        print(f"Errore immagine {label}: {e}")
+        
+        return new_id
+    except Exception as e:
+        st.error(f"Errore finale Worker: {e}")
+        return None
 
 # ==========================================
-# INTERFACCIA
+# INTERFACCIA UTENTE
 # ==========================================
 
-st.title("🎬 Slide Monster: Director Mode (Fixed)")
+st.title("🦖 Slide Monster: Enterprise Edition")
 
 col1, col2 = st.columns([1, 2])
 with col1:
+    st.info("Configurazione Attiva")
     tmpl = st.text_input("ID Template", value=DEFAULT_TEMPLATE_ID)
     fold = st.text_input("ID Cartella Output", value=DEFAULT_FOLDER_ID)
 
-# FASE 1: UPLOAD
+# --- FASE 1: UPLOAD & ANALISI ---
 if st.session_state.app_state == "UPLOAD":
     with col2:
-        uploaded = st.file_uploader("Carica PPT", accept_multiple_files=True, type=['pptx'])
-        if st.button("🧠 Analizza", type="primary"):
+        st.write("### 1. Carica i tuoi file")
+        uploaded = st.file_uploader("Trascina qui i PPTX", accept_multiple_files=True, type=['pptx'])
+        
+        if st.button("🧠 Analizza e Prepara", type="primary"):
             if uploaded:
                 st.session_state.draft_data = {}
                 st.session_state.final_images = {}
+                
                 bar = st.progress(0)
                 for i, f in enumerate(uploaded):
                     fname = f.name.replace(".pptx", "") + "_ITA"
                     txt = extract_text_from_pptx(f)
-                    data = brain_process(txt, selected_gemini, image_style)
+                    
+                    # Chiamata a Gemini
+                    data = brain_process(txt)
+                    
                     if data:
                         st.session_state.draft_data[fname] = {"ai_data": data, "original_file": f.name}
-                        st.session_state.final_images[fname] = {}
+                        st.session_state.final_images[fname] = {} # Prepariamo il dizionario vuoto per le immagini
+                    
                     bar.progress((i+1)/len(uploaded))
+                
                 st.session_state.app_state = "EDIT"
                 st.rerun()
 
-# FASE 2: EDITING
+# --- FASE 2: SALA DI REGIA (IMAGEN) ---
 elif st.session_state.app_state == "EDIT":
     st.divider()
-    st.subheader("✏️ Sala di Regia")
+    st.write("### 2. Sala di Regia: Genera Immagini HD")
+    st.info("Qui usi Google Imagen 3 (Vertex AI). Le immagini vengono salvate nel tuo Bucket e poi inserite nelle slide.")
 
     for fname, content in st.session_state.draft_data.items():
         data = content['ai_data']
         
-        with st.expander(f"📂 File: **{fname}**", expanded=True):
+        with st.expander(f"📂 Progetto: **{fname}**", expanded=True):
             
-            # --- COPERTINA ---
-            st.markdown("### 1. Copertina")
-            c1, c2 = st.columns([1, 1])
+            # === COPERTINA ===
+            st.markdown("#### Copertina")
+            c1, c2 = st.columns([2, 1])
             with c1:
-                key_prompt = f"p_cover_{fname}"
-                new_prompt = st.text_area("Prompt", value=data['cover'].get('image_prompt', ''), height=100, key=key_prompt)
-                st.session_state.draft_data[fname]['ai_data']['cover']['image_prompt'] = new_prompt
+                st.write(f"**Titolo:** {data['cover'].get('title')}")
+                # Text Area per modificare il prompt
+                p_cov = st.text_area("Prompt Cover", value=data['cover'].get('image_prompt', ''), height=100, key=f"p_c_{fname}")
+                st.session_state.draft_data[fname]['ai_data']['cover']['image_prompt'] = p_cov
                 
-                if st.button(f"🎨 Genera Cover", key=f"btn_cov_{fname}"):
-                    url = generate_image_url(new_prompt, image_style)
-                    st.session_state.final_images[fname]['cover'] = url
-                    st.rerun()
-
+                # PULSANTE GENERAZIONE
+                if st.button("✨ Genera Cover (Imagen)", key=f"b_c_{fname}"):
+                    with st.spinner("Imagen sta creando l'immagine 4K..."):
+                        url, err = generate_and_upload_imagen(p_cov)
+                        if url: 
+                            st.session_state.final_images[fname]['cover'] = url
+                            st.rerun()
+                        else: st.error(f"Errore: {err}")
+            
             with c2:
+                # ANTEPRIMA
                 url = st.session_state.final_images[fname].get('cover')
-                if url:
-                    # DEBUG LINK
-                    st.caption(f"URL: {url}")
-                    img_bytes, error = get_image_bytes(url)
-                    if img_bytes:
-                        st.image(img_bytes, use_container_width=True)
-                    else:
-                        st.error(f"Errore: {error}")
-                        st.link_button("Test URL nel browser", url)
+                if url: 
+                    st.image(url, use_container_width=True)
+                    st.success("Immagine pronta nel Bucket!")
+                else:
+                    st.warning("Nessuna immagine generata")
 
-            # --- SLIDES ---
+            # === SLIDE INTERNE ===
             if 'slides' in data:
-                st.markdown("### 2. Slide Interne")
+                st.markdown("---")
+                st.markdown("#### Slide Interne")
                 for idx, slide in enumerate(data['slides']):
-                    s_key = f"slide_{idx+1}"
-                    sc1, sc2 = st.columns([1, 1])
+                    st.caption(f"Slide {idx+1}")
+                    sc1, sc2 = st.columns([2, 1])
                     
                     with sc1:
-                        st.caption(f"Slide {idx+1}")
-                        k_s = f"p_sl_{idx}_{fname}"
-                        new_s_prompt = st.text_area("Prompt", value=slide.get('image_prompt', ''), height=80, key=k_s)
-                        st.session_state.draft_data[fname]['ai_data']['slides'][idx]['image_prompt'] = new_s_prompt
+                        st.write(f"**{slide.get('title')}**")
+                        p_sl = st.text_area("Prompt", value=slide.get('image_prompt', ''), height=80, key=f"p_s_{idx}_{fname}")
+                        st.session_state.draft_data[fname]['ai_data']['slides'][idx]['image_prompt'] = p_sl
                         
-                        if st.button(f"🎨 Genera Slide {idx+1}", key=f"btn_sl_{idx}_{fname}"):
-                            url = generate_image_url(new_s_prompt, image_style)
-                            st.session_state.final_images[fname][s_key] = url
-                            st.rerun()
-
+                        if st.button(f"✨ Genera Slide {idx+1}", key=f"b_s_{idx}_{fname}"):
+                            with st.spinner("Generazione..."):
+                                url, err = generate_and_upload_imagen(p_sl)
+                                if url:
+                                    st.session_state.final_images[fname][f"slide_{idx+1}"] = url
+                                    st.rerun()
+                                else: st.error(err)
+                    
                     with sc2:
-                        url = st.session_state.final_images[fname].get(s_key)
-                        if url:
-                            img_bytes, error = get_image_bytes(url)
-                            if img_bytes:
-                                st.image(img_bytes, use_container_width=True)
-                            else:
-                                st.error(f"Errore: {error}")
-                                st.link_button("Test URL nel browser", url)
+                        url = st.session_state.final_images[fname].get(f"slide_{idx+1}")
+                        if url: st.image(url, use_container_width=True)
 
-            st.divider()
-
-    # FOOTER
+    # --- FOOTER ---
+    st.divider()
     col_back, col_save = st.columns([1, 4])
     with col_back:
         if st.button("⬅️ Indietro"):
             st.session_state.app_state = "UPLOAD"
             st.rerun()
+    
     with col_save:
-        if st.button("💾 SALVA SU DRIVE", type="primary", use_container_width=True):
-            bar = st.progress(0)
+        if st.button("💾 SALVA TUTTO SU DRIVE", type="primary", use_container_width=True):
+            progress_bar = st.progress(0)
+            msg_box = st.empty()
+            
             i = 0
             for fname, content in st.session_state.draft_data.items():
-                urls = st.session_state.final_images.get(fname, {})
-                res = worker_bot_finalize(tmpl, fold, fname, content['ai_data'], urls)
-                if res: st.toast(f"✅ Salvato: {fname}")
-                i += 1
-                bar.progress(i / len(st.session_state.draft_data))
-            st.success("Finito!")
+                msg_box.write(f"Scrittura file **{fname}** in corso...")
+                
+                # Preparazione Mappa URL per il worker
+                # Mappiamo le chiavi interne (cover, slide_1) alle etichette del Template (IMG_COVER, IMG_1)
+                url_map = {}
+                saved_imgs = st.session_state.final_images.get(fname, {})
+                
+                if 'cover' in saved_imgs: 
+                    url_map['IMG_COVER'] = saved_imgs['cover']
+                
+                for k, v in saved_imgs.items():
+                    if k.startswith("slide_"): 
+                        num = k.split("_")[1] # es. slide_1 -> 1
+                        url_map[f"IMG_{num}"] = v
+                
+                # Esecuzione Finale
+                res_id = worker_bot_finalize(tmpl, fold, fname, content['ai_data'], url_map)
+                
+                if res_id: st.toast(f"✅ Creato: {fname}")
+                else: st.error(f"❌ Fallito: {fname}")
+                
+                i+=1
+                progress_bar.progress(i/len(st.session_state.draft_data))
+                
+            st.success("Tutte le presentazioni sono state create!")
+            st.balloons()
