@@ -24,7 +24,7 @@ if "app_state" not in st.session_state:
 if "draft_data" not in st.session_state:
     st.session_state.draft_data = {}
 if "final_images" not in st.session_state:
-    st.session_state.final_images = {} # Qui salviamo gli URL generati man mano
+    st.session_state.final_images = {} 
 
 # --- LOGIN ---
 try:
@@ -54,7 +54,7 @@ with st.sidebar:
     image_style = st.selectbox("Stile Immagini", ["Imagen 4 (High Fidelity)", "Flux Realism", "Illustrazione 3D"], index=0)
     
     st.divider()
-    if st.button("🔄 Nuova Sessione (Reset)"):
+    if st.button("🔄 Nuova Sessione"):
         st.session_state.app_state = "UPLOAD"
         st.session_state.draft_data = {}
         st.session_state.final_images = {}
@@ -112,27 +112,37 @@ def brain_process(text, model_name, style):
         return None
 
 def generate_image_url(prompt, style_choice):
-    # Pulizia rigorosa per evitare errori "No connection adapters"
-    safe_prompt = prompt.strip().replace("\n", " ").replace("\r", "")
-    if safe_prompt.endswith("."): safe_prompt = safe_prompt[:-1]
+    # 1. PULIZIA ESTREMA: Rimuove qualsiasi cosa non sia testo base
+    # Rimuove ritorni a capo
+    clean = prompt.replace("\n", " ").replace("\r", " ")
+    # Rimuove spazi doppi
+    clean = re.sub(' +', ' ', clean)
+    # Rimuove spazi inizio/fine
+    clean = clean.strip()
     
-    encoded_prompt = urllib.parse.quote(safe_prompt)
+    # 2. ENCODING: Trasforma spazi in %20, ecc.
+    encoded_prompt = urllib.parse.quote(clean)
     seed = os.urandom(2).hex()
     
+    # 3. URL BUILDER (Usa Flux che è il motore dietro Pollinations High Quality)
     url = f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){encoded_prompt}?width=1920&height=1080&model=flux&nologo=true&seed={seed}"
-    return url.strip()
+    return url
 
 def get_image_bytes(url):
-    """Scarica l'immagine per l'anteprima"""
+    """Scarica con Debug degli errori"""
     headers = {"User-Agent": "Mozilla/5.0"}
-    if not url or not url.startswith("http"): return None
-    for attempt in range(3):
-        try:
-            response = requests.get(url, headers=headers, timeout=25)
-            if response.status_code == 200: return BytesIO(response.content)
-            else: time.sleep(1)
-        except Exception: time.sleep(1)
-    return None
+    
+    try:
+        # Timeout a 10s per vedere subito se fallisce
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status() # Lancia errore se 404/500
+        return BytesIO(response.content), None
+    except requests.exceptions.MissingSchema:
+        return None, "L'URL generato non è valido (Manca http)"
+    except requests.exceptions.ConnectionError:
+        return None, "Connessione rifiutata (Errore DNS o Server down)"
+    except Exception as e:
+        return None, str(e)
 
 def find_image_element_id_smart(prs_id, label):
     label_clean = label.strip().upper()
@@ -147,7 +157,6 @@ def find_image_element_id_smart(prs_id, label):
     return None
 
 def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_urls):
-    # 1. Copia File
     try:
         copy = drive_service.files().copy(
             fileId=template_id, body={'name': filename, 'parents': [folder_id]}, supportsAllDrives=True
@@ -157,7 +166,6 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_
         st.error(f"❌ Errore Drive Copy: {e}")
         return None
     
-    # 2. Testi
     reqs = []
     if 'cover' in ai_data:
         reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': ai_data['cover'].get('title', 'Titolo')}})
@@ -171,7 +179,7 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_
     if reqs:
         slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
 
-    # 3. Immagini (Usa quelle già generate)
+    # IMMAGINI
     url_map = {}
     if 'cover' in ai_data: url_map['IMG_COVER'] = pregenerated_urls.get('cover')
     if 'slides' in ai_data:
@@ -189,173 +197,116 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_
     return new_id
 
 # ==========================================
-# INTERFACCIA PRINCIPALE
+# INTERFACCIA
 # ==========================================
 
-st.title("🎬 Slide Monster: Director Mode")
+st.title("🎬 Slide Monster: Director Mode (Debug)")
 
 col1, col2 = st.columns([1, 2])
 with col1:
     tmpl = st.text_input("ID Template", value=DEFAULT_TEMPLATE_ID)
     fold = st.text_input("ID Cartella Output", value=DEFAULT_FOLDER_ID)
 
-# --- FASE 1: UPLOAD & BOZZA ---
+# FASE 1: UPLOAD
 if st.session_state.app_state == "UPLOAD":
     with col2:
-        st.info("Passo 1: Carica i file per generare la bozza dei testi e dei prompt.")
         uploaded = st.file_uploader("Carica PPT", accept_multiple_files=True, type=['pptx'])
-        
-        if st.button("🧠 Analizza e Proponi Prompt", type="primary"):
+        if st.button("🧠 Analizza", type="primary"):
             if uploaded:
                 st.session_state.draft_data = {}
                 st.session_state.final_images = {}
-                
                 bar = st.progress(0)
                 for i, f in enumerate(uploaded):
                     fname = f.name.replace(".pptx", "") + "_ITA"
                     txt = extract_text_from_pptx(f)
                     data = brain_process(txt, selected_gemini, image_style)
-                    
                     if data:
-                        st.session_state.draft_data[fname] = {
-                            "ai_data": data,
-                            "original_file": f.name
-                        }
-                        # Crea contenitore vuoto per le immagini di questo file
+                        st.session_state.draft_data[fname] = {"ai_data": data, "original_file": f.name}
                         st.session_state.final_images[fname] = {}
-                        
                     bar.progress((i+1)/len(uploaded))
-                
                 st.session_state.app_state = "EDIT"
                 st.rerun()
 
-# --- FASE 2: SALA DI REGIA (EDITING PUNTUALE) ---
+# FASE 2: EDITING
 elif st.session_state.app_state == "EDIT":
     st.divider()
-    st.subheader("✏️ Sala di Regia: Genera Immagini Una per Una")
-    st.info("Modifica il prompt se vuoi, poi clicca sul pulsante 'Genera' per vedere il risultato IMMEDIATAMENTE.")
+    st.subheader("✏️ Sala di Regia")
 
-    # Loop su ogni file caricato
     for fname, content in st.session_state.draft_data.items():
         data = content['ai_data']
         
         with st.expander(f"📂 File: **{fname}**", expanded=True):
             
-            # === COPERTINA ===
+            # --- COPERTINA ---
             st.markdown("### 1. Copertina")
             c1, c2 = st.columns([1, 1])
-            
-            # COLONNA SINISTRA: Prompt e Pulsante
             with c1:
-                st.markdown(f"**Titolo:** {data['cover'].get('title')}")
-                key_prompt_cover = f"p_cover_{fname}"
-                new_prompt = st.text_area(
-                    "Prompt Copertina", 
-                    value=data['cover'].get('image_prompt', ''), 
-                    height=100, 
-                    key=key_prompt_cover
-                )
-                # Salviamo il prompt aggiornato
+                key_prompt = f"p_cover_{fname}"
+                new_prompt = st.text_area("Prompt", value=data['cover'].get('image_prompt', ''), height=100, key=key_prompt)
                 st.session_state.draft_data[fname]['ai_data']['cover']['image_prompt'] = new_prompt
                 
-                # PULSANTE DEDICATO COVER
-                if st.button(f"🎨 Genera Copertina", key=f"btn_cover_{fname}"):
-                    with st.spinner("Creazione immagine in corso..."):
-                        url = generate_image_url(new_prompt, image_style)
-                        # Salva URL
-                        st.session_state.final_images[fname]['cover'] = url
-                        # Tentativo di scaricamento (check)
-                        try: requests.get(url, timeout=5)
-                        except: pass
-                        st.rerun() # Ricarica per mostrare l'immagine a destra
+                if st.button(f"🎨 Genera Cover", key=f"btn_cov_{fname}"):
+                    # 1. Genera URL
+                    url = generate_image_url(new_prompt, image_style)
+                    st.session_state.final_images[fname]['cover'] = url
+                    st.rerun()
 
-            # COLONNA DESTRA: Anteprima Immagine
             with c2:
-                current_url = st.session_state.final_images[fname].get('cover')
-                if current_url:
-                    img_bytes = get_image_bytes(current_url)
+                url = st.session_state.final_images[fname].get('cover')
+                if url:
+                    st.caption(f"URL Generato: {url}") # DEBUG VISIVO
+                    # Prova a scaricare
+                    img_bytes, error = get_image_bytes(url)
                     if img_bytes:
-                        st.success("✅ Generata")
                         st.image(img_bytes, use_container_width=True)
                     else:
-                        st.warning("⚠️ Immagine creata ma non caricabile (Timeout)")
-                else:
-                    st.info("L'immagine apparirà qui.")
+                        st.error(f"Errore caricamento: {error}")
+                        st.link_button("Prova ad aprire nel browser", url) # LINK PER TEST MANUALE
 
-            st.markdown("---")
-
-            # === SLIDES ===
+            # --- SLIDES ---
             if 'slides' in data:
                 st.markdown("### 2. Slide Interne")
                 for idx, slide in enumerate(data['slides']):
                     s_key = f"slide_{idx+1}"
                     sc1, sc2 = st.columns([1, 1])
                     
-                    # COLONNA SINISTRA
                     with sc1:
                         st.caption(f"Slide {idx+1}")
-                        st.markdown(f"**{slide.get('title')}**")
+                        k_s = f"p_sl_{idx}_{fname}"
+                        new_s_prompt = st.text_area("Prompt", value=slide.get('image_prompt', ''), height=80, key=k_s)
+                        st.session_state.draft_data[fname]['ai_data']['slides'][idx]['image_prompt'] = new_s_prompt
                         
-                        key_prompt_slide = f"p_slide_{idx}_{fname}"
-                        new_slide_prompt = st.text_area(
-                            f"Prompt Slide {idx+1}", 
-                            value=slide.get('image_prompt', ''), 
-                            height=100, 
-                            key=key_prompt_slide
-                        )
-                        st.session_state.draft_data[fname]['ai_data']['slides'][idx]['image_prompt'] = new_slide_prompt
-                        
-                        # PULSANTE DEDICATO SLIDE
-                        if st.button(f"🎨 Genera Slide {idx+1}", key=f"btn_slide_{idx}_{fname}"):
-                            with st.spinner(f"Creazione Slide {idx+1}..."):
-                                url = generate_image_url(new_slide_prompt, image_style)
-                                st.session_state.final_images[fname][s_key] = url
-                                try: requests.get(url, timeout=5)
-                                except: pass
-                                st.rerun()
+                        if st.button(f"🎨 Genera Slide {idx+1}", key=f"btn_sl_{idx}_{fname}"):
+                            url = generate_image_url(new_s_prompt, image_style)
+                            st.session_state.final_images[fname][s_key] = url
+                            st.rerun()
 
-                    # COLONNA DESTRA
                     with sc2:
-                        current_url_slide = st.session_state.final_images[fname].get(s_key)
-                        if current_url_slide:
-                            img_bytes = get_image_bytes(current_url_slide)
+                        url = st.session_state.final_images[fname].get(s_key)
+                        if url:
+                            img_bytes, error = get_image_bytes(url)
                             if img_bytes:
-                                st.success(f"✅ Slide {idx+1}")
                                 st.image(img_bytes, use_container_width=True)
                             else:
-                                st.warning("⚠️ Errore caricamento")
-                        else:
-                            st.empty() # Spazio vuoto
+                                st.error(f"Errore: {error}")
+                                st.link_button("Apri link", url)
 
-                    st.divider()
+            st.divider()
 
-    # --- FOOTER AZIONI ---
-    st.markdown("### ✅ Ho finito")
+    # FOOTER
     col_back, col_save = st.columns([1, 4])
-    
     with col_back:
         if st.button("⬅️ Indietro"):
             st.session_state.app_state = "UPLOAD"
             st.rerun()
-            
     with col_save:
-        if st.button("💾 SALVA TUTTO SU DRIVE", type="primary", use_container_width=True):
+        if st.button("💾 SALVA SU DRIVE", type="primary", use_container_width=True):
             bar = st.progress(0)
-            status_box = st.empty()
-            
             i = 0
             for fname, content in st.session_state.draft_data.items():
-                status_box.write(f"Scrittura file **{fname}** e inserimento immagini...")
                 urls = st.session_state.final_images.get(fname, {})
-                
-                # Chiamata al worker finale che usa gli URL già generati
                 res = worker_bot_finalize(tmpl, fold, fname, content['ai_data'], urls)
-                
                 if res: st.toast(f"✅ Salvato: {fname}")
-                else: st.error(f"❌ Errore salvataggio {fname}")
-                
                 i += 1
                 bar.progress(i / len(st.session_state.draft_data))
-            
-            st.balloons()
-            st.success("Operazione Completata! Controlla la cartella Drive.")
+            st.success("Finito!")
