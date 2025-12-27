@@ -9,21 +9,34 @@ import os
 # --- CONFIGURAZIONE ---
 st.set_page_config(page_title="Slide Monster Agent", page_icon="🦖", layout="wide")
 
-# --- LOGIN (SECRETS) ---
+# --- LOGIN SICURO (FIX DEFINITIVO) ---
 try:
+    # 1. Configura Gemini
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    service_account_info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
+    
+    # 2. Configura Google Drive & Slides
+    # Qui sta la modifica: legge la nuova struttura sicura del secrets.toml
+    if "gcp_service_account" in st.secrets and "json_content" in st.secrets["gcp_service_account"]:
+        # Caso Nuovo (Sicuro)
+        json_str = st.secrets["gcp_service_account"]["json_content"]
+        service_account_info = json.loads(json_str)
+    else:
+        # Caso Vecchio (Fallback, se dovesse servire)
+        service_account_info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
+    
     creds = service_account.Credentials.from_service_account_info(
         service_account_info,
         scopes=['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/presentations']
     )
     drive_service = build('drive', 'v3', credentials=creds)
     slides_service = build('slides', 'v1', credentials=creds)
+
 except Exception as e:
-    st.error(f"⚠️ Errore Configurazione: {e}")
+    st.error(f"⚠️ Errore Configurazione Secrets: {e}")
+    st.warning("Controlla che in .streamlit/secrets.toml ci sia la sezione [gcp_service_account]")
     st.stop()
 
-# --- FUNZIONI ---
+# --- FUNZIONI DEL MOSTRO ---
 
 def extract_text_from_pptx(file_obj):
     """Legge il testo dai vecchi PPT caricati"""
@@ -87,42 +100,58 @@ def worker_bot(template_id, folder_id, filename, ai_data):
     """Clona il template esistente e lo compila"""
     
     # 1. COPIA IL TEMPLATE GIÀ PRONTO SU DRIVE
-    copy = drive_service.files().copy(
-        fileId=template_id, 
-        body={'name': filename, 'parents': [folder_id]}
-    ).execute()
-    new_id = copy.get('id')
+    try:
+        copy = drive_service.files().copy(
+            fileId=template_id, 
+            body={'name': filename, 'parents': [folder_id]}
+        ).execute()
+        new_id = copy.get('id')
+    except Exception as e:
+        st.error(f"Errore copia file (Controlla che il Service Account abbia accesso alla cartella e al template!): {e}")
+        return None
     
     # 2. TESTI
     reqs = []
     # Cover
-    reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': ai_data['cover']['title']}})
-    reqs.append({'replaceAllText': {'containsText': {'text': '{{SUBTITLE}}'}, 'replaceText': ai_data['cover']['subtitle']}})
-    # Slides
-    for i, s in enumerate(ai_data['slides']):
-        idx = i + 1
-        reqs.append({'replaceAllText': {'containsText': {'text': f'{{{{TITLE_{idx}}}}}'}, 'replaceText': s['title']}})
-        reqs.append({'replaceAllText': {'containsText': {'text': f'{{{{BODY_{idx}}}}}'}, 'replaceText': s['body']}})
+    if 'cover' in ai_data:
+        reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': ai_data['cover'].get('title', '')}})
+        reqs.append({'replaceAllText': {'containsText': {'text': '{{SUBTITLE}}'}, 'replaceText': ai_data['cover'].get('subtitle', '')}})
     
-    if reqs: slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
+    # Slides
+    if 'slides' in ai_data:
+        for i, s in enumerate(ai_data['slides']):
+            idx = i + 1
+            reqs.append({'replaceAllText': {'containsText': {'text': f'{{{{TITLE_{idx}}}}}'}, 'replaceText': s.get('title', '')}})
+            reqs.append({'replaceAllText': {'containsText': {'text': f'{{{{BODY_{idx}}}}}'}, 'replaceText': s.get('body', '')}})
+    
+    if reqs: 
+        slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
 
     # 3. IMMAGINI
     reqs_img = []
-    img_map = {'IMG_COVER': ai_data['cover']['image_prompt']}
-    for i, s in enumerate(ai_data['slides']): img_map[f'IMG_{i+1}'] = s['image_prompt']
+    img_map = {}
+    if 'cover' in ai_data:
+        img_map['IMG_COVER'] = ai_data['cover'].get('image_prompt', '')
+    
+    if 'slides' in ai_data:
+        for i, s in enumerate(ai_data['slides']): 
+            img_map[f'IMG_{i+1}'] = s.get('image_prompt', '')
     
     for label, prompt in img_map.items():
-        el_id = find_image_element_id(new_id, label)
-        if el_id:
-            reqs_img.append({
-                'replaceImage': {
-                    'imageObjectId': el_id,
-                    'imageReplaceMethod': 'CENTER_CROP',
-                    'url': generate_image_url(prompt)
-                }
-            })
+        if prompt:
+            el_id = find_image_element_id(new_id, label)
+            if el_id:
+                reqs_img.append({
+                    'replaceImage': {
+                        'imageObjectId': el_id,
+                        'imageReplaceMethod': 'CENTER_CROP',
+                        'url': generate_image_url(prompt)
+                    }
+                })
             
-    if reqs_img: slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs_img}).execute()
+    if reqs_img: 
+        slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs_img}).execute()
+        
     return new_id
 
 # --- INTERFACCIA ---
@@ -134,7 +163,6 @@ with col1:
     st.subheader("1. Configurazione Drive")
     st.info("Incolla qui gli ID presi dagli URL di Drive")
     
-    # QUI INSERISCI GLI ID CHE HAI GIÀ
     template_id = st.text_input("ID Template Google Slide", placeholder="es. 1AbCdEfG...")
     folder_id = st.text_input("ID Cartella Output", placeholder="es. 1XyZ...")
 
@@ -153,18 +181,21 @@ with col2:
                 fname = f.name.replace(".pptx", "") + "_ENG"
                 status.write(f"⚙️ Lavoro su: **{fname}**...")
                 
-                # Estrazione
-                txt = extract_text_from_pptx(f)
-                # AI
-                data = brain_process(txt)
-                
-                if data:
-                    try:
+                try:
+                    # Estrazione
+                    txt = extract_text_from_pptx(f)
+                    # AI
+                    data = brain_process(txt)
+                    
+                    if data:
                         # Qui usiamo il template_id che hai incollato
-                        worker_bot(template_id, folder_id, fname, data)
-                        st.toast(f"Fatto: {fname}")
-                    except Exception as e:
-                        st.error(f"Errore su {fname}: {e}")
+                        new_id = worker_bot(template_id, folder_id, fname, data)
+                        if new_id:
+                            st.toast(f"Fatto: {fname}")
+                        else:
+                            st.error(f"Errore generazione su {fname}")
+                except Exception as e:
+                    st.error(f"Errore critico su {fname}: {e}")
                 
                 bar.progress((i+1)/len(files))
             
