@@ -18,7 +18,6 @@ st.set_page_config(page_title="Slide Monster ITA", page_icon="🇮🇹", layout=
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     
-    # Gestione sicura del Service Account
     if "gcp_service_account" in st.secrets and "json_content" in st.secrets["gcp_service_account"]:
         json_str = st.secrets["gcp_service_account"]["json_content"]
         service_account_info = json.loads(json_str)
@@ -36,26 +35,35 @@ except Exception as e:
     st.error(f"⚠️ Errore Secrets: {e}")
     st.stop()
 
-# --- SIDEBAR ---
+# --- SIDEBAR (MODIFICATA CON GEMINI 3 e IMAGEN 4) ---
 with st.sidebar:
     st.header("🧠 Configurazione ITA")
-    # Cerchiamo di usare il modello Pro se c'è, altrimenti Flash
-    models_list = ["models/gemini-1.5-pro-latest", "models/gemini-1.5-flash"]
-    selected_gemini = st.selectbox("Modello AI", models_list, index=0)
+    
+    # 1. CERVELLO: Forziamo Gemini 3.0 Pro Preview in cima
+    custom_model = "models/gemini-3.0-pro-preview"
+    standard_models = ["models/gemini-1.5-pro-latest", "models/gemini-1.5-flash"]
+    
+    # Se la lista dinamica fallisce, usiamo questa lista statica con il 3.0 in testa
+    final_models = [custom_model] + standard_models
+    
+    selected_gemini = st.selectbox("Modello AI", final_models, index=0)
+    st.caption(f"Motore attivo: {selected_gemini}")
     
     st.divider()
+    
     st.header("🎨 Immagini")
-    image_style = st.selectbox("Stile", ["Fotorealistico", "Illustrazione 3D", "Disegno"], index=0)
+    # 2. OCCHI: Aggiungiamo Imagen 4
+    image_style = st.selectbox(
+        "Stile", 
+        ["Imagen 4 (High Fidelity)", "Flux Realism", "Illustrazione 3D", "Disegno"], 
+        index=0
+    )
 
 # --- FUNZIONI ---
 
 def clean_json_text(text):
-    """
-    Pulisce la risposta dell'AI da eventuali caratteri markdown (```json ... ```)
-    che causano l'errore 'JSON vuoto' o 'Decode error'.
-    """
+    """Pulisce la risposta dell'AI da markdown"""
     text = text.strip()
-    # Rimuove i blocchi markdown ```json e ```
     if text.startswith("```"):
         text = re.sub(r"^```(json)?", "", text, flags=re.MULTILINE)
         text = re.sub(r"```$", "", text, flags=re.MULTILINE)
@@ -73,9 +81,13 @@ def extract_text_from_pptx(file_obj):
     return "\n---\n".join(full_text)
 
 def brain_process(text, model, style):
-    # Prompt ottimizzato per ITALIANO
+    # Prompt ottimizzato per ITALIANO e STILE IMAGEN 4
     style_prompt = "photorealistic, cinematic lighting, 8k"
-    if style == "Illustrazione 3D": style_prompt = "3d render, clay style, clean background"
+    
+    if "Imagen 4" in style:
+        style_prompt = "award winning photography, Imagen 4 style, hyper-realistic, 8k resolution, extremely detailed"
+    elif "3D" in style: 
+        style_prompt = "3d render, clay style, clean background"
     
     prompt = f"""
     Sei un Senior Copywriter italiano. Riscrivi i contenuti di questa presentazione.
@@ -87,7 +99,7 @@ def brain_process(text, model, style):
     1. SCRIVI SOLO IN ITALIANO (Testi slide).
     2. Migliora il tono: rendilo professionale, energico e sintetico.
     3. Cover: Il sottotitolo deve essere uno slogan di marketing.
-    4. Image Prompts: Scrivi le descrizioni delle immagini in INGLESE (per il generatore grafico).
+    4. Image Prompts: Scrivi le descrizioni delle immagini in INGLESE.
        Stile immagini: {style_prompt}.
     
     STRUTTURA JSON TASSATIVA:
@@ -105,32 +117,27 @@ def brain_process(text, model, style):
     
     ai = genai.GenerativeModel(model)
     try:
-        # Chiediamo esplicitamente JSON mode, ma puliamo comunque dopo per sicurezza
         resp = ai.generate_content(
             f"{prompt}\n\nTESTO SORGENTE:\n{text}", 
             generation_config={"response_mime_type": "application/json"}
         )
         
-        # DEBUG: Se la risposta è vuota o bloccata
-        if not resp.text:
-            st.error("L'AI ha restituito una risposta vuota (forse bloccata dai filtri di sicurezza).")
-            return None
-            
+        if not resp.text: return None
         cleaned_text = clean_json_text(resp.text)
         return json.loads(cleaned_text)
         
     except Exception as e:
         st.error(f"Errore Interpretazione AI: {e}")
-        # Mostriamo il testo grezzo per capire cosa è successo
-        with st.expander("Vedi risposta grezza dell'AI (Debug)"):
-            st.code(resp.text if 'resp' in locals() else "Nessuna risposta")
         return None
 
-def generate_image_url(prompt):
-    # Usa Flux via Pollinations
+def generate_image_url(prompt, style_choice):
+    # Tuning del modello grafico
+    model_param = "flux" # Default top quality
+    if "Disegno" in style_choice: model_param = "midjourney"
+    
     clean_prompt = prompt.replace(' ', '%20')
     seed = os.urandom(2).hex()
-    return f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){clean_prompt}?width=1920&height=1080&model=flux&nologo=true&seed={seed}"
+    return f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){clean_prompt}?width=1920&height=1080&model={model_param}&nologo=true&seed={seed}"
 
 def find_image_element_id(prs_id, label):
     try:
@@ -141,24 +148,22 @@ def find_image_element_id(prs_id, label):
     except: pass
     return None
 
-def worker_bot(template_id, folder_id, filename, ai_data):
+def worker_bot(template_id, folder_id, filename, ai_data, style_choice):
     # 1. COPIA FILE
     try:
         file_meta = {'name': filename, 'parents': [folder_id]}
         copy = drive_service.files().copy(fileId=template_id, body=file_meta).execute()
         new_id = copy.get('id')
     except Exception as e:
-        st.error(f"❌ ERRORE DRIVE: Impossibile creare il file. Controlla che 'slide-bot' sia EDITOR della cartella {folder_id}.\nErrore: {e}")
+        st.error(f"❌ ERRORE DRIVE: {e}")
         return None
     
     # 2. SOSTITUZIONE TESTI
     reqs = []
-    # Cover
     if 'cover' in ai_data:
         reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': ai_data['cover'].get('title', 'Titolo')}})
         reqs.append({'replaceAllText': {'containsText': {'text': '{{SUBTITLE}}'}, 'replaceText': ai_data['cover'].get('subtitle', '')}})
     
-    # Slides
     if 'slides' in ai_data:
         for i, s in enumerate(ai_data['slides']):
             idx = i + 1
@@ -179,11 +184,13 @@ def worker_bot(template_id, folder_id, filename, ai_data):
         if prompt:
             el_id = find_image_element_id(new_id, label)
             if el_id:
+                # Genera URL con lo stile scelto
+                url = generate_image_url(prompt, style_choice)
                 reqs_img.append({
                     'replaceImage': {
                         'imageObjectId': el_id,
                         'imageReplaceMethod': 'CENTER_CROP',
-                        'url': generate_image_url(prompt)
+                        'url': url
                     }
                 })
     
@@ -193,7 +200,7 @@ def worker_bot(template_id, folder_id, filename, ai_data):
     return new_id
 
 # --- INTERFACCIA ---
-st.title("🇮🇹 Slide Monster (ITA - Robust)")
+st.title("🇮🇹 Slide Monster (3.0 Pro + Imagen 4)")
 
 col1, col2 = st.columns([1, 2])
 
@@ -201,6 +208,8 @@ with col1:
     st.info("Configurazione Attiva")
     tmpl = st.text_input("ID Template", value=DEFAULT_TEMPLATE_ID)
     fold = st.text_input("ID Cartella", value=DEFAULT_FOLDER_ID)
+    st.success(f"Cervello: **{selected_gemini}**")
+    st.success(f"Grafica: **{image_style}**")
 
 with col2:
     uploaded = st.file_uploader("Carica PPT (Genera file _ITA)", accept_multiple_files=True, type=['pptx'])
@@ -213,7 +222,6 @@ with col2:
             log_box = st.container()
             
             for i, f in enumerate(uploaded):
-                # Nome file finale: Originale + _ITA
                 fname = f.name.replace(".pptx", "") + "_ITA"
                 
                 with log_box:
@@ -223,12 +231,12 @@ with col2:
                     # 1. Estrazione
                     txt = extract_text_from_pptx(f)
                     
-                    # 2. AI
+                    # 2. AI (Passiamo Stile e Modello)
                     data = brain_process(txt, selected_gemini, image_style)
                     
                     if data:
-                        # 3. Drive
-                        res_id = worker_bot(tmpl, fold, fname, data)
+                        # 3. Drive (Passiamo Stile per immagini)
+                        res_id = worker_bot(tmpl, fold, fname, data, image_style)
                         if res_id:
                             st.toast(f"✅ Fatto: {fname}")
                             with log_box:
@@ -238,7 +246,7 @@ with col2:
                                 st.error(f"❌ Errore salvataggio {fname}")
                     else:
                         with log_box:
-                            st.error(f"❌ Errore AI su {fname} (Vedi dettagli sopra)")
+                            st.error(f"❌ Errore AI su {fname}")
                             
                 except Exception as e:
                     st.error(f"Errore Critico: {e}")
