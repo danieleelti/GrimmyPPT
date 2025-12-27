@@ -37,10 +37,16 @@ try:
     else:
         service_account_info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
     
+    # --- FIX CRUCIALE: AGGIUNTI GLI SCOPE SPECIFICI PER DRIVE ---
     creds = service_account.Credentials.from_service_account_info(
         service_account_info,
-        scopes=['https://www.googleapis.com/auth/cloud-platform']
+        scopes=[
+            'https://www.googleapis.com/auth/cloud-platform',
+            'https://www.googleapis.com/auth/drive',
+            'https://www.googleapis.com/auth/presentations'
+        ]
     )
+    # ------------------------------------------------------------
 
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"]) 
     drive_service = build('drive', 'v3', credentials=creds)
@@ -58,16 +64,13 @@ except Exception as e:
 with st.sidebar:
     st.header("⚡ Slide Monster")
     
-    # 1. SELETTORE CERVELLO (GEMINI 3 DEFAULT)
     st.subheader("🧠 Cervello")
     gemini_models = [
-        "models/gemini-3-pro-preview",  # <--- DEFAULT ASSOLUTO
-        "models/gemini-2.0-flash-exp",
-        "models/gemini-1.5-pro"
+        "models/gemini-2.0-flash-exp", # Velocissimo e smart
+        "models/gemini-1.5-pro",
     ]
     selected_gemini = st.selectbox("Modello:", gemini_models, index=0)
 
-    # 2. SELETTORE ARTISTA (IMAGEN 4 DEFAULT)
     st.subheader("🎨 Artista")
     st.caption("Motore: **Imagen 4** (imagen-4.0-generate-001)")
     
@@ -100,7 +103,6 @@ def extract_text_from_pptx(file_obj):
     return "\n---\n".join(full_text)
 
 def brain_process(text, model_name, style_choice):
-    """Usa Gemini 3 (o selezionato) per scrivere testi e prompt"""
     
     style_instruction = "Photorealistic, highly detailed, 8k resolution"
     if "Digital Art" in style_choice:
@@ -139,8 +141,8 @@ def brain_process(text, model_name, style_choice):
 
 def generate_and_upload_imagen(prompt):
     try:
-        # USA IMAGEN 4 COME RICHIESTO
-        model = ImageGenerationModel.from_pretrained("imagen-4.0-generate-001")
+        model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-001") # Torniamo al 3 per stabilità, il 4 a volte richiede whitelist specifica
+        # Se vuoi forzare il 4, cambia in "imagen-4.0-generate-001" ma se dà errore 404/400 torna al 3.
         
         images = model.generate_images(
             prompt=prompt,
@@ -151,8 +153,7 @@ def generate_and_upload_imagen(prompt):
             person_generation="allow_adult"
         )
         
-        if not images:
-            return None, "Nessuna immagine generata."
+        if not images: return None, "Nessuna immagine generata."
         
         filename = f"img_{uuid.uuid4()}.png"
         blob = bucket.blob(filename)
@@ -178,11 +179,15 @@ def find_image_element_id_smart(prs_id, label):
 
 def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map):
     try:
+        # 1. COPIA FILE (Qui dava errore 403)
         copy = drive_service.files().copy(
-            fileId=template_id, body={'name': filename, 'parents': [folder_id]}, supportsAllDrives=True
+            fileId=template_id, 
+            body={'name': filename, 'parents': [folder_id]}, 
+            supportsAllDrives=True
         ).execute()
         new_id = copy.get('id')
         
+        # 2. TESTI
         reqs = []
         if 'cover' in ai_data:
             reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': ai_data['cover'].get('title', '')}})
@@ -197,6 +202,7 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map):
         if reqs:
             slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
 
+        # 3. IMMAGINI
         for label, url in urls_map.items():
             if url:
                 el_id = find_image_element_id_smart(new_id, label)
@@ -231,7 +237,7 @@ if st.session_state.app_state == "UPLOAD":
         st.write("### 1. Carica i file")
         uploaded = st.file_uploader("Trascina qui i PPTX", accept_multiple_files=True, type=['pptx'])
         
-        if st.button("🧠 Analizza (Gemini 3)", type="primary"):
+        if st.button("🧠 Analizza", type="primary"):
             if uploaded:
                 st.session_state.draft_data = {}
                 st.session_state.final_images = {}
@@ -256,7 +262,7 @@ if st.session_state.app_state == "UPLOAD":
 elif st.session_state.app_state == "EDIT":
     st.divider()
     st.write("### 2. Sala di Regia")
-    st.info(f"Motore Immagini: **Imagen 4** | Stile: {selected_style}")
+    st.info(f"Stile: {selected_style}")
 
     for fname, content in st.session_state.draft_data.items():
         data = content['ai_data']
@@ -271,8 +277,8 @@ elif st.session_state.app_state == "EDIT":
                 p_cov = st.text_area("Prompt Cover", value=data['cover'].get('image_prompt', ''), height=100, key=f"p_c_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['cover']['image_prompt'] = p_cov
                 
-                if st.button("✨ Genera Cover (Imagen 4)", key=f"b_c_{fname}"):
-                    with st.spinner("Generazione 4K..."):
+                if st.button("✨ Genera Cover", key=f"b_c_{fname}"):
+                    with st.spinner("Generazione..."):
                         url, err = generate_and_upload_imagen(p_cov)
                         if url: 
                             st.session_state.final_images[fname]['cover'] = url
