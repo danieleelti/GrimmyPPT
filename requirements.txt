@@ -1,5 +1,7 @@
 streamlit
+google-generativeai
+google-api-python-client
+google-auth
+google-cloud-aiplatform
+google-cloud-storage
 python-pptx
-watchdog
-google-generativeai>=0.8.3
-pillow
