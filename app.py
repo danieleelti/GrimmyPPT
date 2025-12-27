@@ -113,7 +113,10 @@ def brain_process(text, model_name, style):
 
 def generate_image_url(prompt, style_choice):
     # 1. Pulizia aggressiva del prompt (rimuove punti finali e spazi strani)
-    safe_prompt = prompt.strip().replace("\n", " ").replace("\r", "")
+    # Rimuove a capo, tabulazioni e spazi extra
+    safe_prompt = prompt.replace("\n", " ").replace("\r", "").strip()
+    
+    # Rimuove il punto finale se c'è, per evitare problemi nell'URL
     if safe_prompt.endswith("."):
         safe_prompt = safe_prompt[:-1]
         
@@ -121,12 +124,12 @@ def generate_image_url(prompt, style_choice):
     encoded_prompt = urllib.parse.quote(safe_prompt)
     seed = os.urandom(2).hex()
     
-    # 3. Costruzione URL e pulizia finale (rimuove spazi bianchi "invisibili" nell'URL)
+    # 3. Costruzione URL e pulizia finale (strip assicura nessun spazio invisibile nell'URL)
     url = f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){encoded_prompt}?width=1920&height=1080&model=flux&nologo=true&seed={seed}"
     return url.strip()
 
 def get_image_bytes(url):
-    """Scarica immagine con gestione robusta degli errori"""
+    """Scarica immagine con gestione robusta degli errori e pulizia URL"""
     headers = {"User-Agent": "Mozilla/5.0"}
     
     # Controllo preventivo URL
@@ -142,9 +145,12 @@ def get_image_bytes(url):
             else:
                 time.sleep(1)
         except requests.exceptions.InvalidSchema:
-            # Questo è l'errore che avevi: URL malformato
-            st.warning(f"⚠️ URL Immagine malformato, salto: {url[:30]}...")
+            # Questo cattura l'errore "No connection adapters"
+            st.warning(f"⚠️ URL Immagine malformato (Schema invalido), salto immagine.")
             return None
+        except requests.exceptions.MissingSchema:
+             st.warning(f"⚠️ URL Immagine mancante di http/https.")
+             return None
         except Exception:
             time.sleep(1)
     return None
@@ -194,7 +200,7 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, pregenerated_
         for i, s in enumerate(ai_data['slides']): url_map[f'IMG_{i+1}'] = pregenerated_urls.get(f'slide_{i+1}')
         
     for label, url in url_map.items():
-        if url:
+        if url and url.startswith("http"): # Controllo extra
             el_id = find_image_element_id_smart(new_id, label)
             if el_id:
                 req = {'replaceImage': {'imageObjectId': el_id, 'imageReplaceMethod': 'CENTER_CROP', 'url': url}}
@@ -246,9 +252,6 @@ elif st.session_state.app_state == "EDIT":
     st.divider()
     st.subheader("✏️ Revisione Prompt")
     
-    # Contenitore per i messaggi di errore (per non rompere l'app)
-    error_container = st.empty()
-
     for fname, content in st.session_state.draft_data.items():
         data = content['ai_data']
         
@@ -304,9 +307,7 @@ elif st.session_state.app_state == "PREVIEW":
             # Cover
             if 'cover' in data:
                 url = generate_image_url(data['cover']['image_prompt'], image_style)
-                # Pre-check: se requests.get fallisce subito, lo sappiamo
-                try:
-                    requests.get(url, timeout=5)
+                try: requests.get(url, timeout=5)
                 except: pass
                 urls['cover'] = url
             
@@ -314,8 +315,7 @@ elif st.session_state.app_state == "PREVIEW":
             if 'slides' in data:
                 for idx, s in enumerate(data['slides']):
                     url = generate_image_url(s['image_prompt'], image_style)
-                    try:
-                        requests.get(url, timeout=5)
+                    try: requests.get(url, timeout=5)
                     except: pass
                     urls[f'slide_{idx+1}'] = url
             
@@ -335,12 +335,11 @@ elif st.session_state.app_state == "PREVIEW":
             # Cover
             if 'cover' in urls:
                 st.markdown("### Copertina")
-                # Caricamento sicuro
                 img_bytes = get_image_bytes(urls['cover'])
                 if img_bytes:
                     st.image(img_bytes, caption="Cover", use_container_width=True)
                 else:
-                    st.warning(f"⚠️ Immagine non disponibile (Link: {urls['cover']})")
+                    st.warning(f"⚠️ Immagine non disponibile (Errore URL)")
             
             # Slides
             st.markdown("### Slide")
@@ -354,7 +353,7 @@ elif st.session_state.app_state == "PREVIEW":
                             if img_bytes:
                                 st.image(img_bytes, caption=f"Slide {idx+1}", use_container_width=True)
                             else:
-                                st.warning("⚠️ Immagine non disponibile")
+                                st.warning("⚠️ Errore Immagine")
                             with st.popover(f"Prompt {idx+1}"):
                                 st.write(slide.get('image_prompt'))
 
