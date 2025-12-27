@@ -12,12 +12,14 @@ DEFAULT_TEMPLATE_ID = "1BHac-ciWsMCxjtNrv8RxB68LyDi9cZrV6VMWEeXCw5A"
 DEFAULT_FOLDER_ID = "1GGDGFQjAqck9Tdo30EZiLEo3CVJOlUKX"
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Slide Monster ITA", page_icon="🇮🇹", layout="wide")
+st.set_page_config(page_title="Slide Monster 3.0", page_icon="🦖", layout="wide")
 
-# --- LOGIN ---
+# --- LOGIN & SETUP ---
 try:
+    # Configura API Key (Fondamentale per interrogare i modelli)
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     
+    # Configura Drive
     if "gcp_service_account" in st.secrets and "json_content" in st.secrets["gcp_service_account"]:
         json_str = st.secrets["gcp_service_account"]["json_content"]
         service_account_info = json.loads(json_str)
@@ -35,26 +37,42 @@ except Exception as e:
     st.error(f"⚠️ Errore Secrets: {e}")
     st.stop()
 
-# --- SIDEBAR (CORRETTA) ---
+# --- SIDEBAR DINAMICA ---
 with st.sidebar:
-    st.header("🧠 Configurazione ITA")
+    st.header("🧠 Cervello AI")
     
-    # LISTA MODELLI PULITA (Senza versioni 'latest' che danno errore 404)
-    # Metto il tuo modello custom per primo.
-    available_models = [
-        "models/gemini-3.0-pro-preview",  # Il tuo modello
-        "models/gemini-1.5-pro",          # Versione Stabile (No 'latest')
-        "models/gemini-1.5-flash"         # Versione Veloce
-    ]
+    # 1. INTERROGAZIONE STREAMLIT/GOOGLE (LIVE)
+    try:
+        fetched_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                fetched_models.append(m.name)
+        # Ordiniamo per avere i più recenti in alto
+        fetched_models.sort(reverse=True)
+    except Exception as e:
+        st.warning(f"Impossibile scaricare lista modelli: {e}")
+        fetched_models = []
+
+    # 2. LOGICA "GEMINI 3 DEFAULT"
+    target_model = "models/gemini-3.0-pro-preview"
     
-    selected_gemini = st.selectbox("Modello AI", available_models, index=0)
+    # Se il modello target non c'è nella lista (spesso le preview sono nascoste), lo aggiungiamo a forza
+    if target_model not in fetched_models:
+        fetched_models.insert(0, target_model)
+    else:
+        # Se c'è, lo spostiamo in cima per renderlo default
+        fetched_models.remove(target_model)
+        fetched_models.insert(0, target_model)
+    
+    # Dropdown con la lista reale scaricata
+    selected_gemini = st.selectbox("Modello Disponibile", fetched_models, index=0)
     st.caption(f"Motore attivo: {selected_gemini}")
     
     st.divider()
     
     st.header("🎨 Immagini")
     image_style = st.selectbox(
-        "Stile", 
+        "Stile Grafico", 
         ["Imagen 4 (High Fidelity)", "Flux Realism", "Illustrazione 3D", "Disegno"], 
         index=0
     )
@@ -62,9 +80,7 @@ with st.sidebar:
 # --- FUNZIONI ---
 
 def clean_json_text(text):
-    """Pulisce la risposta dell'AI da markdown"""
     text = text.strip()
-    # Rimuove blocchi markdown
     if text.startswith("```"):
         text = re.sub(r"^```(json)?", "", text, flags=re.MULTILINE)
         text = re.sub(r"```$", "", text, flags=re.MULTILINE)
@@ -82,7 +98,7 @@ def extract_text_from_pptx(file_obj):
     return "\n---\n".join(full_text)
 
 def brain_process(text, model_name, style):
-    # Prompt
+    # Prompt ottimizzato
     style_prompt = "photorealistic, cinematic lighting, 8k"
     if "Imagen 4" in style:
         style_prompt = "award winning photography, Imagen 4 style, hyper-realistic, 8k resolution, extremely detailed"
@@ -115,7 +131,7 @@ def brain_process(text, model_name, style):
     }}
     """
     
-    # Usiamo esplicitamente il nome del modello selezionato nella sidebar
+    # Usa il modello dinamico scelto
     ai = genai.GenerativeModel(model_name)
     try:
         resp = ai.generate_content(
@@ -128,7 +144,6 @@ def brain_process(text, model_name, style):
         return json.loads(cleaned_text)
         
     except Exception as e:
-        # Se fallisce il 3.0, lo diciamo chiaramente invece di crashare silenziosamente
         st.error(f"Errore Modello ({model_name}): {e}")
         return None
 
@@ -200,21 +215,20 @@ def worker_bot(template_id, folder_id, filename, ai_data, style_choice):
     return new_id
 
 # --- INTERFACCIA ---
-st.title("🇮🇹 Slide Monster (Final)")
+st.title("🦖 Slide Monster 3.0 (Dynamic Engine)")
 
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    st.info("Configurazione Attiva")
+    st.success("✅ Configurazione Caricata")
     tmpl = st.text_input("ID Template", value=DEFAULT_TEMPLATE_ID)
     fold = st.text_input("ID Cartella", value=DEFAULT_FOLDER_ID)
-    st.success(f"Cervello: **{selected_gemini}**")
-    st.success(f"Grafica: **{image_style}**")
+    st.info(f"Cervello Attivo: **{selected_gemini}**")
 
 with col2:
-    uploaded = st.file_uploader("Carica PPT (Genera file _ITA)", accept_multiple_files=True, type=['pptx'])
+    uploaded = st.file_uploader("Carica PPT", accept_multiple_files=True, type=['pptx'])
     
-    if st.button("🚀 ELABORA (Versione Italiana)", type="primary"):
+    if st.button("🚀 ELABORA (ITA)", type="primary"):
         if not uploaded:
             st.warning("Carica i file!")
         else:
@@ -225,11 +239,12 @@ with col2:
                 fname = f.name.replace(".pptx", "") + "_ITA"
                 
                 with log_box:
-                    st.write(f"▶️ **{fname}**: Analisi in corso con {selected_gemini}...")
+                    st.write(f"▶️ **{fname}**: Analisi con {selected_gemini}...")
                 
                 try:
                     txt = extract_text_from_pptx(f)
                     
+                    # Usa il modello dinamico
                     data = brain_process(txt, selected_gemini, image_style)
                     
                     if data:
@@ -237,17 +252,17 @@ with col2:
                         if res_id:
                             st.toast(f"✅ Fatto: {fname}")
                             with log_box:
-                                st.success(f"✅ **{fname}** salvato su Drive!")
+                                st.success(f"✅ **{fname}** completato!")
                         else:
                             with log_box:
                                 st.error(f"❌ Errore salvataggio {fname}")
                     else:
                         with log_box:
-                            st.error(f"❌ Errore AI su {fname} (Controlla se il modello {selected_gemini} è accessibile dalla tua chiave API)")
+                            st.error(f"❌ Errore AI (JSON vuoto) con {selected_gemini}")
                             
                 except Exception as e:
-                    st.error(f"Errore Critico: {e}")
+                    st.error(f"Critico: {e}")
                 
                 bar.progress((i+1)/len(uploaded))
             
-            st.success("Tutto finito!")
+            st.success("Finito!")
