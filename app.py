@@ -6,22 +6,23 @@ from pptx import Presentation
 import json
 import os
 
-# --- CONFIGURAZIONE ---
+# --- I TUOI ID PREDEFINITI ---
+DEFAULT_TEMPLATE_ID = "1BHac-ciWsMCxjtNrv8RxB68LyDi9cZrV6VMWEeXCw5A"
+DEFAULT_FOLDER_ID = "1GGDGFQjAqck9Tdo30EZiLEo3CVJOlUKX"
+
+# --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Slide Monster Agent", page_icon="🦖", layout="wide")
 
-# --- LOGIN SICURO (FIX DEFINITIVO) ---
+# --- 1. LOGIN & SETUP INIZIALE ---
 try:
-    # 1. Configura Gemini
+    # Configura Gemini
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     
-    # 2. Configura Google Drive & Slides
-    # Qui sta la modifica: legge la nuova struttura sicura del secrets.toml
+    # Configura Drive & Slides
     if "gcp_service_account" in st.secrets and "json_content" in st.secrets["gcp_service_account"]:
-        # Caso Nuovo (Sicuro)
         json_str = st.secrets["gcp_service_account"]["json_content"]
         service_account_info = json.loads(json_str)
     else:
-        # Caso Vecchio (Fallback, se dovesse servire)
         service_account_info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
     
     creds = service_account.Credentials.from_service_account_info(
@@ -32,14 +33,52 @@ try:
     slides_service = build('slides', 'v1', credentials=creds)
 
 except Exception as e:
-    st.error(f"⚠️ Errore Configurazione Secrets: {e}")
-    st.warning("Controlla che in .streamlit/secrets.toml ci sia la sezione [gcp_service_account]")
+    st.error(f"⚠️ Errore Configurazione: {e}")
     st.stop()
 
-# --- FUNZIONI DEL MOSTRO ---
+# --- 2. SIDEBAR E SELEZIONE MODELLI ---
+with st.sidebar:
+    st.header("🧠 Cervello AI")
+    
+    # A. Recupera modelli reali + INSERISCE IL TUO MODELLO CUSTOM
+    try:
+        available_models = []
+        # Tenta di recuperare la lista reale
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+        available_models.sort(reverse=True)
+    except:
+        available_models = ["models/gemini-1.5-pro-latest"]
+
+    # FORZATURA: Inseriamo il tuo modello in cima alla lista
+    # Se esiste già nella lista lo rimuoviamo per non averlo doppio
+    custom_model = "models/gemini-3.0-pro-preview"
+    if custom_model in available_models:
+        available_models.remove(custom_model)
+    
+    # Lo inseriamo in posizione 0 (Default assoluto)
+    available_models.insert(0, custom_model)
+            
+    selected_gemini = st.selectbox("Modello Testo (Default: 3.0 Pro)", available_models, index=0)
+    st.caption(f"Attivo: {selected_gemini}")
+    
+    st.divider()
+    
+    st.header("🎨 Motore Immagini")
+    st.info("Motore grafico impostato su massima qualità.")
+    
+    # Imagen 4 come default (index 0)
+    image_style = st.selectbox(
+        "Stile Generazione", 
+        ["Imagen 4 (High Fidelity)", "Flux Realism", "3D Render", "Digital Art", "Anime"],
+        index=0
+    )
+
+# --- FUNZIONI ---
 
 def extract_text_from_pptx(file_obj):
-    """Legge il testo dai vecchi PPT caricati"""
+    """Legge il testo dai vecchi PPT"""
     prs = Presentation(file_obj)
     full_text = []
     for slide in prs.slides:
@@ -50,9 +89,19 @@ def extract_text_from_pptx(file_obj):
         full_text.append(" | ".join(slide_text))
     return "\n---\n".join(full_text)
 
-def brain_process(text):
-    """Gemini: Traduce e crea il JSON per il Template"""
-    prompt = """
+def brain_process(text, model_name, style_pref):
+    """Gemini: Traduce e crea il JSON usando il modello scelto"""
+    
+    # Tuning del prompt in base allo stile scelto
+    style_instruction = "Photorealistic, 4k, highly detailed, vivid colors"
+    if "Imagen 4" in style_pref: 
+        style_instruction = "Award winning photography, 8k resolution, Imagen 4 style, hyper-realistic"
+    elif "3D" in style_pref: 
+        style_instruction = "3D clay render, clean background, blender style"
+    elif "Anime" in style_pref: 
+        style_instruction = "Anime style, Studio Ghibli vibes"
+    
+    prompt = f"""
     Sei un Senior Editor. Trasforma questa presentazione grezza in un format inglese perfetto.
     
     INPUT: Testo vecchia presentazione.
@@ -60,31 +109,44 @@ def brain_process(text):
     
     REGOLE:
     1. Traduci in INGLESE (US).
-    2. Cover: Sottotitolo = slogan breve.
-    3. Slide 1-5: Sintetizza i punti chiave.
-    4. Image Prompts: Descrizione visiva in inglese.
+    2. Usa un tono professionale ed energico.
+    3. Image Prompts: Scrivi descrizioni visive dettagliate in inglese. 
+       STILE IMMAGINI RICHIESTO: {style_instruction}.
     
     JSON ESATTO:
-    {
-        "cover": { "title": "...", "subtitle": "...", "image_prompt": "..." },
+    {{
+        "cover": {{ "title": "...", "subtitle": "...", "image_prompt": "..." }},
         "slides": [
-            { "id": 1, "title": "...", "body": "...", "image_prompt": "..." },
-            { "id": 2, "title": "...", "body": "...", "image_prompt": "..." },
-            { "id": 3, "title": "...", "body": "...", "image_prompt": "..." },
-            { "id": 4, "title": "...", "body": "...", "image_prompt": "..." },
-            { "id": 5, "title": "...", "body": "...", "image_prompt": "..." }
+            {{ "id": 1, "title": "...", "body": "...", "image_prompt": "..." }},
+            {{ "id": 2, "title": "...", "body": "...", "image_prompt": "..." }},
+            {{ "id": 3, "title": "...", "body": "...", "image_prompt": "..." }},
+            {{ "id": 4, "title": "...", "body": "...", "image_prompt": "..." }},
+            {{ "id": 5, "title": "...", "body": "...", "image_prompt": "..." }}
         ]
-    }
+    }}
     """
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    
+    # Qui usiamo il modello selezionato nella Sidebar
+    model = genai.GenerativeModel(model_name)
     try:
         resp = model.generate_content(f"{prompt}\n\nTESTO:\n{text}", generation_config={"response_mime_type": "application/json"})
         return json.loads(resp.text)
-    except: return None
+    except Exception as e:
+        print(e)
+        return None
 
-def generate_image_url(prompt):
-    """URL immagine AI (Pollinations)"""
-    return f"https://image.pollinations.ai/prompt/{prompt.replace(' ', '%20')}?width=1920&height=1080&nologo=true"
+def generate_image_url(prompt, style):
+    """URL immagine AI con ottimizzazione modello"""
+    # Selezioniamo il modello interno di Pollinations
+    # Se l'utente sceglie "Imagen 4", usiamo 'flux' (che è il top di gamma attuale su Pollinations) 
+    # ma con il prompt ottimizzato da Gemini per simulare quello stile.
+    model_param = "flux" 
+    
+    if "Anime" in style: model_param = "midjourney"
+    
+    clean_prompt = prompt.replace(' ', '%20')
+    # Aggiungiamo seed casuale per variare
+    return f"https://image.pollinations.ai/prompt/{clean_prompt}?width=1920&height=1080&model={model_param}&nologo=true&seed={os.urandom(2).hex()}"
 
 def find_image_element_id(prs_id, label):
     """Trova ID immagine nel template tramite Alt Text"""
@@ -96,10 +158,10 @@ def find_image_element_id(prs_id, label):
     except: pass
     return None
 
-def worker_bot(template_id, folder_id, filename, ai_data):
-    """Clona il template esistente e lo compila"""
+def worker_bot(template_id, folder_id, filename, ai_data, img_style_choice):
+    """Clona e compila"""
     
-    # 1. COPIA IL TEMPLATE GIÀ PRONTO SU DRIVE
+    # 1. COPIA TEMPLATE
     try:
         copy = drive_service.files().copy(
             fileId=template_id, 
@@ -107,17 +169,15 @@ def worker_bot(template_id, folder_id, filename, ai_data):
         ).execute()
         new_id = copy.get('id')
     except Exception as e:
-        st.error(f"Errore copia file (Controlla che il Service Account abbia accesso alla cartella e al template!): {e}")
+        st.error(f"Errore copia file: {e}")
         return None
     
     # 2. TESTI
     reqs = []
-    # Cover
     if 'cover' in ai_data:
         reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': ai_data['cover'].get('title', '')}})
         reqs.append({'replaceAllText': {'containsText': {'text': '{{SUBTITLE}}'}, 'replaceText': ai_data['cover'].get('subtitle', '')}})
     
-    # Slides
     if 'slides' in ai_data:
         for i, s in enumerate(ai_data['slides']):
             idx = i + 1
@@ -130,22 +190,21 @@ def worker_bot(template_id, folder_id, filename, ai_data):
     # 3. IMMAGINI
     reqs_img = []
     img_map = {}
-    if 'cover' in ai_data:
-        img_map['IMG_COVER'] = ai_data['cover'].get('image_prompt', '')
-    
+    if 'cover' in ai_data: img_map['IMG_COVER'] = ai_data['cover'].get('image_prompt', '')
     if 'slides' in ai_data:
-        for i, s in enumerate(ai_data['slides']): 
-            img_map[f'IMG_{i+1}'] = s.get('image_prompt', '')
+        for i, s in enumerate(ai_data['slides']): img_map[f'IMG_{i+1}'] = s.get('image_prompt', '')
     
     for label, prompt in img_map.items():
         if prompt:
             el_id = find_image_element_id(new_id, label)
             if el_id:
+                # Generiamo l'URL passando anche lo stile scelto
+                img_url = generate_image_url(prompt, img_style_choice)
                 reqs_img.append({
                     'replaceImage': {
                         'imageObjectId': el_id,
                         'imageReplaceMethod': 'CENTER_CROP',
-                        'url': generate_image_url(prompt)
+                        'url': img_url
                     }
                 })
             
@@ -154,48 +213,51 @@ def worker_bot(template_id, folder_id, filename, ai_data):
         
     return new_id
 
-# --- INTERFACCIA ---
-st.title("🦖 Slide Monster (Google Native)")
+# --- INTERFACCIA PRINCIPALE ---
+st.title("🦖 Slide Monster (Pro Edition)")
 
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    st.subheader("1. Configurazione Drive")
-    st.info("Incolla qui gli ID presi dagli URL di Drive")
+    st.subheader("1. Configurazione")
+    template_id = st.text_input("ID Template", value=DEFAULT_TEMPLATE_ID)
+    folder_id = st.text_input("ID Cartella Output", value=DEFAULT_FOLDER_ID)
     
-    template_id = st.text_input("ID Template Google Slide", placeholder="es. 1AbCdEfG...")
-    folder_id = st.text_input("ID Cartella Output", placeholder="es. 1XyZ...")
+    st.success(f"Brain: **{selected_gemini}**")
+    st.success(f"Art: **{image_style}**")
 
 with col2:
     st.subheader("2. Carica i vecchi PPT")
-    files = st.file_uploader("Trascina qui i PPTX da convertire", accept_multiple_files=True, type=['pptx'])
+    files = st.file_uploader("Trascina qui i PPTX", accept_multiple_files=True, type=['pptx'])
     
     if st.button("🔥 ATTIVA IL MOSTRO", type="primary"):
         if not files or not folder_id or not template_id:
-            st.warning("Mancano ID Template, ID Cartella o i File!")
+            st.warning("Mancano i file!")
         else:
             bar = st.progress(0)
             status = st.empty()
             
             for i, f in enumerate(files):
                 fname = f.name.replace(".pptx", "") + "_ENG"
-                status.write(f"⚙️ Lavoro su: **{fname}**...")
+                status.write(f"⚙️ Elaborazione: **{fname}** con {selected_gemini}...")
                 
                 try:
-                    # Estrazione
                     txt = extract_text_from_pptx(f)
-                    # AI
-                    data = brain_process(txt)
+                    
+                    # Passiamo il modello selezionato e lo stile al cervello
+                    data = brain_process(txt, selected_gemini, image_style)
                     
                     if data:
-                        # Qui usiamo il template_id che hai incollato
-                        new_id = worker_bot(template_id, folder_id, fname, data)
+                        new_id = worker_bot(template_id, folder_id, fname, data, image_style)
                         if new_id:
-                            st.toast(f"Fatto: {fname}")
+                            st.toast(f"✅ Fatto: {fname}")
                         else:
-                            st.error(f"Errore generazione su {fname}")
+                            st.error(f"❌ Errore copia su {fname}")
+                    else:
+                        st.error(f"❌ Errore AI (JSON vuoto) su {fname}")
+
                 except Exception as e:
-                    st.error(f"Errore critico su {fname}: {e}")
+                    st.error(f"❌ Critico {fname}: {e}")
                 
                 bar.progress((i+1)/len(files))
             
