@@ -7,7 +7,7 @@ import json
 import os
 import re
 
-# --- ID PREDEFINITI (I TUOI) ---
+# --- ID PREDEFINITI ---
 DEFAULT_TEMPLATE_ID = "1BHac-ciWsMCxjtNrv8RxB68LyDi9cZrV6VMWEeXCw5A"
 DEFAULT_FOLDER_ID = "1GGDGFQjAqck9Tdo30EZiLEo3CVJOlUKX"
 
@@ -35,24 +35,24 @@ except Exception as e:
     st.error(f"⚠️ Errore Secrets: {e}")
     st.stop()
 
-# --- SIDEBAR (MODIFICATA CON GEMINI 3 e IMAGEN 4) ---
+# --- SIDEBAR (CORRETTA) ---
 with st.sidebar:
     st.header("🧠 Configurazione ITA")
     
-    # 1. CERVELLO: Forziamo Gemini 3.0 Pro Preview in cima
-    custom_model = "models/gemini-3.0-pro-preview"
-    standard_models = ["models/gemini-1.5-pro-latest", "models/gemini-1.5-flash"]
+    # LISTA MODELLI PULITA (Senza versioni 'latest' che danno errore 404)
+    # Metto il tuo modello custom per primo.
+    available_models = [
+        "models/gemini-3.0-pro-preview",  # Il tuo modello
+        "models/gemini-1.5-pro",          # Versione Stabile (No 'latest')
+        "models/gemini-1.5-flash"         # Versione Veloce
+    ]
     
-    # Se la lista dinamica fallisce, usiamo questa lista statica con il 3.0 in testa
-    final_models = [custom_model] + standard_models
-    
-    selected_gemini = st.selectbox("Modello AI", final_models, index=0)
+    selected_gemini = st.selectbox("Modello AI", available_models, index=0)
     st.caption(f"Motore attivo: {selected_gemini}")
     
     st.divider()
     
     st.header("🎨 Immagini")
-    # 2. OCCHI: Aggiungiamo Imagen 4
     image_style = st.selectbox(
         "Stile", 
         ["Imagen 4 (High Fidelity)", "Flux Realism", "Illustrazione 3D", "Disegno"], 
@@ -64,6 +64,7 @@ with st.sidebar:
 def clean_json_text(text):
     """Pulisce la risposta dell'AI da markdown"""
     text = text.strip()
+    # Rimuove blocchi markdown
     if text.startswith("```"):
         text = re.sub(r"^```(json)?", "", text, flags=re.MULTILINE)
         text = re.sub(r"```$", "", text, flags=re.MULTILINE)
@@ -80,10 +81,9 @@ def extract_text_from_pptx(file_obj):
         full_text.append(" | ".join(s_txt))
     return "\n---\n".join(full_text)
 
-def brain_process(text, model, style):
-    # Prompt ottimizzato per ITALIANO e STILE IMAGEN 4
+def brain_process(text, model_name, style):
+    # Prompt
     style_prompt = "photorealistic, cinematic lighting, 8k"
-    
     if "Imagen 4" in style:
         style_prompt = "award winning photography, Imagen 4 style, hyper-realistic, 8k resolution, extremely detailed"
     elif "3D" in style: 
@@ -115,7 +115,8 @@ def brain_process(text, model, style):
     }}
     """
     
-    ai = genai.GenerativeModel(model)
+    # Usiamo esplicitamente il nome del modello selezionato nella sidebar
+    ai = genai.GenerativeModel(model_name)
     try:
         resp = ai.generate_content(
             f"{prompt}\n\nTESTO SORGENTE:\n{text}", 
@@ -127,12 +128,12 @@ def brain_process(text, model, style):
         return json.loads(cleaned_text)
         
     except Exception as e:
-        st.error(f"Errore Interpretazione AI: {e}")
+        # Se fallisce il 3.0, lo diciamo chiaramente invece di crashare silenziosamente
+        st.error(f"Errore Modello ({model_name}): {e}")
         return None
 
 def generate_image_url(prompt, style_choice):
-    # Tuning del modello grafico
-    model_param = "flux" # Default top quality
+    model_param = "flux" 
     if "Disegno" in style_choice: model_param = "midjourney"
     
     clean_prompt = prompt.replace(' ', '%20')
@@ -149,7 +150,7 @@ def find_image_element_id(prs_id, label):
     return None
 
 def worker_bot(template_id, folder_id, filename, ai_data, style_choice):
-    # 1. COPIA FILE
+    # 1. COPIA
     try:
         file_meta = {'name': filename, 'parents': [folder_id]}
         copy = drive_service.files().copy(fileId=template_id, body=file_meta).execute()
@@ -158,7 +159,7 @@ def worker_bot(template_id, folder_id, filename, ai_data, style_choice):
         st.error(f"❌ ERRORE DRIVE: {e}")
         return None
     
-    # 2. SOSTITUZIONE TESTI
+    # 2. TESTI
     reqs = []
     if 'cover' in ai_data:
         reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': ai_data['cover'].get('title', 'Titolo')}})
@@ -184,7 +185,6 @@ def worker_bot(template_id, folder_id, filename, ai_data, style_choice):
         if prompt:
             el_id = find_image_element_id(new_id, label)
             if el_id:
-                # Genera URL con lo stile scelto
                 url = generate_image_url(prompt, style_choice)
                 reqs_img.append({
                     'replaceImage': {
@@ -200,7 +200,7 @@ def worker_bot(template_id, folder_id, filename, ai_data, style_choice):
     return new_id
 
 # --- INTERFACCIA ---
-st.title("🇮🇹 Slide Monster (3.0 Pro + Imagen 4)")
+st.title("🇮🇹 Slide Monster (Final)")
 
 col1, col2 = st.columns([1, 2])
 
@@ -225,17 +225,14 @@ with col2:
                 fname = f.name.replace(".pptx", "") + "_ITA"
                 
                 with log_box:
-                    st.write(f"▶️ **{fname}**: Analisi in corso...")
+                    st.write(f"▶️ **{fname}**: Analisi in corso con {selected_gemini}...")
                 
                 try:
-                    # 1. Estrazione
                     txt = extract_text_from_pptx(f)
                     
-                    # 2. AI (Passiamo Stile e Modello)
                     data = brain_process(txt, selected_gemini, image_style)
                     
                     if data:
-                        # 3. Drive (Passiamo Stile per immagini)
                         res_id = worker_bot(tmpl, fold, fname, data, image_style)
                         if res_id:
                             st.toast(f"✅ Fatto: {fname}")
@@ -246,7 +243,7 @@ with col2:
                                 st.error(f"❌ Errore salvataggio {fname}")
                     else:
                         with log_box:
-                            st.error(f"❌ Errore AI su {fname}")
+                            st.error(f"❌ Errore AI su {fname} (Controlla se il modello {selected_gemini} è accessibile dalla tua chiave API)")
                             
                 except Exception as e:
                     st.error(f"Errore Critico: {e}")
