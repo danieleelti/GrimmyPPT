@@ -12,14 +12,14 @@ import time
 import uuid
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Slide Monster: Enterprise Edition", page_icon="🦖", layout="wide")
+st.set_page_config(page_title="Slide Monster: GOD MODE", page_icon="⚡", layout="wide")
 
 # ======================================================
-# ⚙️ I TUOI DATI (INSERITI AUTOMATICAMENTE)
+# ⚙️ I TUOI DATI
 # ======================================================
-GCP_PROJECT_ID = "gen-lang-client-0247086002"  # Il tuo ID Progetto
-GCS_BUCKET_NAME = "bucket_grimmy"              # Il tuo Bucket
-GCP_LOCATION = "us-central1"                   # Regione Standard per Imagen
+GCP_PROJECT_ID = "gen-lang-client-0247086002"
+GCS_BUCKET_NAME = "bucket_grimmy"
+GCP_LOCATION = "us-central1"
 # ======================================================
 
 DEFAULT_TEMPLATE_ID = "1BHac-ciWsMCxjtNrv8RxB68LyDi9cZrV6VMWEeXCw5A" 
@@ -32,7 +32,6 @@ if "final_images" not in st.session_state: st.session_state.final_images = {}
 
 # --- INIZIALIZZAZIONE SERVIZI GOOGLE ---
 try:
-    # 1. Recupera Credenziali (dal Secrets di Streamlit)
     if "gcp_service_account" in st.secrets and "json_content" in st.secrets["gcp_service_account"]:
         service_account_info = json.loads(st.secrets["gcp_service_account"]["json_content"])
     else:
@@ -43,14 +42,10 @@ try:
         scopes=['https://www.googleapis.com/auth/cloud-platform']
     )
 
-    # 2. Setup Gemini (Testo)
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"]) 
-    
-    # 3. Setup Drive & Slides API
     drive_service = build('drive', 'v3', credentials=creds)
     slides_service = build('slides', 'v1', credentials=creds)
     
-    # 4. Setup Vertex AI (Immagini) & Storage (Bucket)
     vertexai.init(project=GCP_PROJECT_ID, location=GCP_LOCATION, credentials=creds)
     storage_client = storage.Client(credentials=creds, project=GCP_PROJECT_ID)
     bucket = storage_client.bucket(GCS_BUCKET_NAME)
@@ -61,20 +56,39 @@ except Exception as e:
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("🦖 Slide Monster")
-    st.caption(f"Project: {GCP_PROJECT_ID}")
-    st.caption(f"Bucket: {GCS_BUCKET_NAME}")
+    st.header("⚡ Slide Monster")
+    
+    # 1. SELETTORE CERVELLO (GEMINI 3 DEFAULT)
+    st.subheader("🧠 Cervello")
+    gemini_models = [
+        "models/gemini-3-pro-preview",  # <--- DEFAULT ASSOLUTO
+        "models/gemini-2.0-flash-exp",
+        "models/gemini-1.5-pro"
+    ]
+    selected_gemini = st.selectbox("Modello:", gemini_models, index=0)
+
+    # 2. SELETTORE ARTISTA (IMAGEN 4 DEFAULT)
+    st.subheader("🎨 Artista")
+    st.caption("Motore: **Imagen 4** (imagen-4.0-generate-001)")
+    
+    image_styles = [
+        "Fotorealistico (High Fidelity)", 
+        "Cinematico (Film Look)", 
+        "Digital Art (Moderno)", 
+        "Illustrazione 3D (Pixar Style)"
+    ]
+    selected_style = st.selectbox("Stile Visivo:", image_styles, index=0)
+    
     st.divider()
-    if st.button("🔄 Nuova Sessione (Reset)"):
+    if st.button("🔄 Reset"):
         st.session_state.app_state = "UPLOAD"
         st.session_state.draft_data = {}
         st.session_state.final_images = {}
         st.rerun()
 
-# --- FUNZIONI INTELLIGENTI ---
+# --- FUNZIONI ---
 
 def extract_text_from_pptx(file_obj):
-    """Estrae il testo dal file PowerPoint caricato"""
     prs = Presentation(file_obj)
     full_text = []
     for slide in prs.slides:
@@ -85,41 +99,48 @@ def extract_text_from_pptx(file_obj):
         full_text.append(" | ".join(s_txt))
     return "\n---\n".join(full_text)
 
-def brain_process(text):
-    """Usa Gemini per scrivere i testi e i prompt"""
-    prompt = """
+def brain_process(text, model_name, style_choice):
+    """Usa Gemini 3 (o selezionato) per scrivere testi e prompt"""
+    
+    style_instruction = "Photorealistic, highly detailed, 8k resolution"
+    if "Digital Art" in style_choice:
+        style_instruction = "Digital art, vibrant colors, modern corporate style"
+    elif "Illustrazione 3D" in style_choice:
+        style_instruction = "3D render, cute, clay style, bright lighting"
+    elif "Cinematico" in style_choice:
+        style_instruction = "Cinematic shot, dramatic lighting, movie scene"
+
+    prompt = f"""
     Sei un Creative Director esperto. 
     Analizza il testo fornito e struttura una presentazione efficace.
     
     OUTPUT RICHIESTO (JSON):
-    {
-        "cover": { "title": "Titolo Accattivante", "subtitle": "Slogan", "image_prompt": "Descrizione visiva dettagliata in INGLESE per la copertina" },
+    {{
+        "cover": {{ "title": "Titolo Accattivante", "subtitle": "Slogan", "image_prompt": "Descrizione visiva dettagliata in INGLESE per la copertina" }},
         "slides": [
-            { "id": 1, "title": "Titolo Slide 1", "body": "Contenuto sintetico (max 30 parole)", "image_prompt": "Descrizione visiva in INGLESE" },
-            { "id": 2, "title": "Titolo Slide 2", "body": "Contenuto sintetico", "image_prompt": "Descrizione visiva in INGLESE" },
-            { "id": 3, "title": "Titolo Slide 3", "body": "Contenuto sintetico", "image_prompt": "Descrizione visiva in INGLESE" },
-            { "id": 4, "title": "Titolo Slide 4", "body": "Contenuto sintetico", "image_prompt": "Descrizione visiva in INGLESE" },
-            { "id": 5, "title": "Titolo Slide 5", "body": "Contenuto sintetico", "image_prompt": "Descrizione visiva in INGLESE" }
+            {{ "id": 1, "title": "Titolo Slide 1", "body": "Contenuto sintetico (max 30 parole)", "image_prompt": "Descrizione visiva in INGLESE" }},
+            {{ "id": 2, "title": "Titolo Slide 2", "body": "Contenuto sintetico", "image_prompt": "Descrizione visiva in INGLESE" }},
+            {{ "id": 3, "title": "Titolo Slide 3", "body": "Contenuto sintetico", "image_prompt": "Descrizione visiva in INGLESE" }},
+            {{ "id": 4, "title": "Titolo Slide 4", "body": "Contenuto sintetico", "image_prompt": "Descrizione visiva in INGLESE" }},
+            {{ "id": 5, "title": "Titolo Slide 5", "body": "Contenuto sintetico", "image_prompt": "Descrizione visiva in INGLESE" }}
         ]
-    }
+    }}
+    
+    NOTA SUI PROMPT IMMAGINI: Usa lo stile: {style_instruction}.
     """
-    model = genai.GenerativeModel("models/gemini-1.5-pro")
+    
+    model = genai.GenerativeModel(model_name)
     try:
         resp = model.generate_content(f"{prompt}\n\nTESTO SORGENTE:\n{text}", generation_config={"response_mime_type": "application/json"})
         return json.loads(resp.text)
     except Exception as e:
-        st.error(f"Errore Gemini: {e}")
+        st.error(f"Errore Gemini ({model_name}): {e}")
         return None
 
 def generate_and_upload_imagen(prompt):
-    """
-    1. Genera immagine con Imagen 3 (Vertex AI)
-    2. Carica l'immagine nel Bucket Pubblico
-    3. Restituisce il link pubblico
-    """
     try:
-        # A. Generazione con Imagen
-        model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-001")
+        # USA IMAGEN 4 COME RICHIESTO
+        model = ImageGenerationModel.from_pretrained("imagen-4.0-generate-001")
         
         images = model.generate_images(
             prompt=prompt,
@@ -131,18 +152,11 @@ def generate_and_upload_imagen(prompt):
         )
         
         if not images:
-            return None, "Nessuna immagine generata (Filtro sicurezza?)"
+            return None, "Nessuna immagine generata."
         
-        # B. Salvataggio su Bucket
-        # Creiamo un nome file unico
         filename = f"img_{uuid.uuid4()}.png"
         blob = bucket.blob(filename)
-        
-        # Carichiamo i dati
         blob.upload_from_string(images[0]._image_bytes, content_type="image/png")
-        
-        # C. Costruzione URL Pubblico
-        # Dato che il bucket è "allUsers = Viewer", questo link funziona ovunque
         public_url = f"https://storage.googleapis.com/{GCS_BUCKET_NAME}/{filename}"
         
         return public_url, None
@@ -151,13 +165,11 @@ def generate_and_upload_imagen(prompt):
         return None, str(e)
 
 def find_image_element_id_smart(prs_id, label):
-    """Trova l'ID dell'elemento immagine nel Template cercando nel Testo Alternativo"""
     label_clean = label.strip().upper()
     try:
         prs = slides_service.presentations().get(presentationId=prs_id).execute()
         for slide in prs.get('slides', []):
             for el in slide.get('pageElements', []):
-                # Cerchiamo in 'description' che corrisponde al Testo Alternativo
                 if 'description' in el and el['description'].strip().upper() == label_clean:
                     return el['objectId']
     except Exception as e:
@@ -165,15 +177,12 @@ def find_image_element_id_smart(prs_id, label):
     return None
 
 def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map):
-    """Assembla tutto: Copia Template -> Sostituisce Testi -> Sostituisce Immagini"""
     try:
-        # 1. Copia Template
         copy = drive_service.files().copy(
             fileId=template_id, body={'name': filename, 'parents': [folder_id]}, supportsAllDrives=True
         ).execute()
         new_id = copy.get('id')
         
-        # 2. Sostituzione Testi (Batch Update)
         reqs = []
         if 'cover' in ai_data:
             reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': ai_data['cover'].get('title', '')}})
@@ -188,7 +197,6 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map):
         if reqs:
             slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
 
-        # 3. Sostituzione Immagini (Una per una)
         for label, url in urls_map.items():
             if url:
                 el_id = find_image_element_id_smart(new_id, label)
@@ -196,7 +204,7 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map):
                     req = {'replaceImage': {'imageObjectId': el_id, 'imageReplaceMethod': 'CENTER_CROP', 'url': url}}
                     try:
                         slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': [req]}).execute()
-                        time.sleep(0.5) # Pausa tattica per non sovraccaricare le API
+                        time.sleep(0.5) 
                     except Exception as e:
                         print(f"Errore immagine {label}: {e}")
         
@@ -209,7 +217,7 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map):
 # INTERFACCIA UTENTE
 # ==========================================
 
-st.title("🦖 Slide Monster: Enterprise Edition")
+st.title("⚡ Slide Monster: GOD MODE")
 
 col1, col2 = st.columns([1, 2])
 with col1:
@@ -220,10 +228,10 @@ with col1:
 # --- FASE 1: UPLOAD & ANALISI ---
 if st.session_state.app_state == "UPLOAD":
     with col2:
-        st.write("### 1. Carica i tuoi file")
+        st.write("### 1. Carica i file")
         uploaded = st.file_uploader("Trascina qui i PPTX", accept_multiple_files=True, type=['pptx'])
         
-        if st.button("🧠 Analizza e Prepara", type="primary"):
+        if st.button("🧠 Analizza (Gemini 3)", type="primary"):
             if uploaded:
                 st.session_state.draft_data = {}
                 st.session_state.final_images = {}
@@ -233,23 +241,22 @@ if st.session_state.app_state == "UPLOAD":
                     fname = f.name.replace(".pptx", "") + "_ITA"
                     txt = extract_text_from_pptx(f)
                     
-                    # Chiamata a Gemini
-                    data = brain_process(txt)
+                    data = brain_process(txt, selected_gemini, selected_style)
                     
                     if data:
                         st.session_state.draft_data[fname] = {"ai_data": data, "original_file": f.name}
-                        st.session_state.final_images[fname] = {} # Prepariamo il dizionario vuoto per le immagini
+                        st.session_state.final_images[fname] = {} 
                     
                     bar.progress((i+1)/len(uploaded))
                 
                 st.session_state.app_state = "EDIT"
                 st.rerun()
 
-# --- FASE 2: SALA DI REGIA (IMAGEN) ---
+# --- FASE 2: SALA DI REGIA ---
 elif st.session_state.app_state == "EDIT":
     st.divider()
-    st.write("### 2. Sala di Regia: Genera Immagini HD")
-    st.info("Qui usi Google Imagen 3 (Vertex AI). Le immagini vengono salvate nel tuo Bucket e poi inserite nelle slide.")
+    st.write("### 2. Sala di Regia")
+    st.info(f"Motore Immagini: **Imagen 4** | Stile: {selected_style}")
 
     for fname, content in st.session_state.draft_data.items():
         data = content['ai_data']
@@ -261,13 +268,11 @@ elif st.session_state.app_state == "EDIT":
             c1, c2 = st.columns([2, 1])
             with c1:
                 st.write(f"**Titolo:** {data['cover'].get('title')}")
-                # Text Area per modificare il prompt
                 p_cov = st.text_area("Prompt Cover", value=data['cover'].get('image_prompt', ''), height=100, key=f"p_c_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['cover']['image_prompt'] = p_cov
                 
-                # PULSANTE GENERAZIONE
-                if st.button("✨ Genera Cover (Imagen)", key=f"b_c_{fname}"):
-                    with st.spinner("Imagen sta creando l'immagine 4K..."):
+                if st.button("✨ Genera Cover (Imagen 4)", key=f"b_c_{fname}"):
+                    with st.spinner("Generazione 4K..."):
                         url, err = generate_and_upload_imagen(p_cov)
                         if url: 
                             st.session_state.final_images[fname]['cover'] = url
@@ -275,13 +280,12 @@ elif st.session_state.app_state == "EDIT":
                         else: st.error(f"Errore: {err}")
             
             with c2:
-                # ANTEPRIMA
                 url = st.session_state.final_images[fname].get('cover')
                 if url: 
                     st.image(url, use_container_width=True)
-                    st.success("Immagine pronta nel Bucket!")
+                    st.success("OK")
                 else:
-                    st.warning("Nessuna immagine generata")
+                    st.warning("Da generare")
 
             # === SLIDE INTERNE ===
             if 'slides' in data:
@@ -323,27 +327,20 @@ elif st.session_state.app_state == "EDIT":
             
             i = 0
             for fname, content in st.session_state.draft_data.items():
-                msg_box.write(f"Scrittura file **{fname}** in corso...")
+                msg_box.write(f"Scrittura file **{fname}**...")
                 
-                # Preparazione Mappa URL per il worker
-                # Mappiamo le chiavi interne (cover, slide_1) alle etichette del Template (IMG_COVER, IMG_1)
                 url_map = {}
                 saved_imgs = st.session_state.final_images.get(fname, {})
-                
-                if 'cover' in saved_imgs: 
-                    url_map['IMG_COVER'] = saved_imgs['cover']
-                
+                if 'cover' in saved_imgs: url_map['IMG_COVER'] = saved_imgs['cover']
                 for k, v in saved_imgs.items():
                     if k.startswith("slide_"): 
-                        num = k.split("_")[1] # es. slide_1 -> 1
+                        num = k.split("_")[1]
                         url_map[f"IMG_{num}"] = v
                 
-                # Esecuzione Finale
                 res_id = worker_bot_finalize(tmpl, fold, fname, content['ai_data'], url_map)
                 
                 if res_id: st.toast(f"✅ Creato: {fname}")
                 else: st.error(f"❌ Fallito: {fname}")
-                
                 i+=1
                 progress_bar.progress(i/len(st.session_state.draft_data))
                 
