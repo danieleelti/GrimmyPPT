@@ -12,7 +12,7 @@ import time
 import uuid
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Slide Monster: GOD MODE", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Slide Monster: GOD MODE (Gemini 3)", page_icon="⚡", layout="wide")
 
 # ======================================================
 # ⚙️ I TUOI DATI
@@ -30,14 +30,14 @@ if "app_state" not in st.session_state: st.session_state.app_state = "UPLOAD"
 if "draft_data" not in st.session_state: st.session_state.draft_data = {}
 if "final_images" not in st.session_state: st.session_state.final_images = {} 
 
-# --- INIZIALIZZAZIONE SERVIZI GOOGLE ---
+# --- INIZIALIZZAZIONE ---
 try:
     if "gcp_service_account" in st.secrets and "json_content" in st.secrets["gcp_service_account"]:
         service_account_info = json.loads(st.secrets["gcp_service_account"]["json_content"])
     else:
         service_account_info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
     
-    # --- FIX CRUCIALE: AGGIUNTI GLI SCOPE SPECIFICI PER DRIVE ---
+    # PERMESSI COMPLETI (Scope corretti)
     creds = service_account.Credentials.from_service_account_info(
         service_account_info,
         scopes=[
@@ -46,7 +46,6 @@ try:
             'https://www.googleapis.com/auth/presentations'
         ]
     )
-    # ------------------------------------------------------------
 
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"]) 
     drive_service = build('drive', 'v3', credentials=creds)
@@ -57,7 +56,7 @@ try:
     bucket = storage_client.bucket(GCS_BUCKET_NAME)
 
 except Exception as e:
-    st.error(f"⚠️ Errore critico inizializzazione: {e}")
+    st.error(f"⚠️ Errore Inizializzazione: {e}")
     st.stop()
 
 # --- SIDEBAR ---
@@ -65,14 +64,31 @@ with st.sidebar:
     st.header("⚡ Slide Monster")
     
     st.subheader("🧠 Cervello")
-    gemini_models = [
-        "models/gemini-2.0-flash-exp", # Velocissimo e smart
-        "models/gemini-1.5-pro",
-    ]
-    selected_gemini = st.selectbox("Modello:", gemini_models, index=0)
+    # FORZIAMO GEMINI 3 PRO PREVIEW COME DEFAULT ASSOLUTO
+    # Se il modello non è nella lista automatica, lo aggiungiamo manualmente.
+    try:
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+    except:
+        available_models = []
+
+    # Nome tecnico ufficiale di Gemini 3
+    target_model = "models/gemini-3-pro-preview" 
+    
+    # Se non c'è nella lista (perché è preview nascosta), lo aggiungiamo in cima
+    if target_model not in available_models:
+        available_models.insert(0, target_model)
+    else:
+        # Se c'è, lo spostiamo in cima per renderlo default
+        available_models.remove(target_model)
+        available_models.insert(0, target_model)
+
+    # Menu a tendina con Gemini 3 pre-selezionato
+    selected_gemini = st.selectbox("Modello Attivo:", available_models, index=0)
+    
+    st.caption(f"ID: `{selected_gemini}`")
 
     st.subheader("🎨 Artista")
-    st.caption("Motore: **Imagen 4** (imagen-4.0-generate-001)")
+    st.caption("Motore: **Imagen 3 (High Fidelity)**")
     
     image_styles = [
         "Fotorealistico (High Fidelity)", 
@@ -89,7 +105,7 @@ with st.sidebar:
         st.session_state.final_images = {}
         st.rerun()
 
-# --- FUNZIONI ---
+# --- FUNZIONI CORE ---
 
 def extract_text_from_pptx(file_obj):
     prs = Presentation(file_obj)
@@ -133,7 +149,11 @@ def brain_process(text, model_name, style_choice):
     
     model = genai.GenerativeModel(model_name)
     try:
-        resp = model.generate_content(f"{prompt}\n\nTESTO SORGENTE:\n{text}", generation_config={"response_mime_type": "application/json"})
+        # Configurazione per output JSON
+        resp = model.generate_content(
+            f"{prompt}\n\nTESTO SORGENTE:\n{text}", 
+            generation_config={"response_mime_type": "application/json"}
+        )
         return json.loads(resp.text)
     except Exception as e:
         st.error(f"Errore Gemini ({model_name}): {e}")
@@ -141,8 +161,8 @@ def brain_process(text, model_name, style_choice):
 
 def generate_and_upload_imagen(prompt):
     try:
-        model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-001") # Torniamo al 3 per stabilità, il 4 a volte richiede whitelist specifica
-        # Se vuoi forzare il 4, cambia in "imagen-4.0-generate-001" ma se dà errore 404/400 torna al 3.
+        # Imagen 3 è la scelta solida
+        model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-001")
         
         images = model.generate_images(
             prompt=prompt,
@@ -179,7 +199,7 @@ def find_image_element_id_smart(prs_id, label):
 
 def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map):
     try:
-        # 1. COPIA FILE (Qui dava errore 403)
+        # 1. COPIA FILE (Ora funziona se hai abilitato Drive API)
         copy = drive_service.files().copy(
             fileId=template_id, 
             body={'name': filename, 'parents': [folder_id]}, 
@@ -237,7 +257,7 @@ if st.session_state.app_state == "UPLOAD":
         st.write("### 1. Carica i file")
         uploaded = st.file_uploader("Trascina qui i PPTX", accept_multiple_files=True, type=['pptx'])
         
-        if st.button("🧠 Analizza", type="primary"):
+        if st.button("🧠 Analizza (Gemini 3 Pro)", type="primary"):
             if uploaded:
                 st.session_state.draft_data = {}
                 st.session_state.final_images = {}
@@ -262,7 +282,7 @@ if st.session_state.app_state == "UPLOAD":
 elif st.session_state.app_state == "EDIT":
     st.divider()
     st.write("### 2. Sala di Regia")
-    st.info(f"Stile: {selected_style}")
+    st.caption(f"Cervello: {selected_gemini} | Artista: Imagen 3")
 
     for fname, content in st.session_state.draft_data.items():
         data = content['ai_data']
