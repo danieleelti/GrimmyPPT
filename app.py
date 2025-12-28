@@ -17,14 +17,20 @@ import io
 st.set_page_config(page_title="Slide Monster: GOD MODE", page_icon="⚡", layout="wide")
 
 # ======================================================
-# ⚙️ I TUOI DATI
+# ⚙️ RECUPERO DATI DA SECRETS
 # ======================================================
+# Se sono definiti nei secrets, li usiamo. Altrimenti stringa vuota.
+if "slides_config" in st.secrets:
+    DEF_TEMPLATE_ID = st.secrets["slides_config"]["template_id"]
+    DEF_FOLDER_ID = st.secrets["slides_config"]["folder_id"]
+else:
+    DEF_TEMPLATE_ID = ""
+    DEF_FOLDER_ID = ""
+
+# DATI PROGETTO (Questi sono fissi per l'autenticazione, ok lasciarli qui o nei secrets, ma per ora teniamoli qui)
 GCP_PROJECT_ID = "gen-lang-client-0247086002"
 GCS_BUCKET_NAME = "bucket_grimmy"
 GCP_LOCATION = "us-central1"
-
-DEF_TEMPLATE_ID = "1BHac-ciWsMCxjtNrv8RxB68LyDi9cZrV6VMWEeXCw5A" 
-DEF_FOLDER_ID = "1wL1oxos7ISS03GzfW0db44XoAk3UocV0"
 # ======================================================
 
 # --- GESTIONE STATO ---
@@ -67,6 +73,7 @@ except Exception as e:
 with st.sidebar:
     st.header("⚡ Slide Monster")
     
+    # I valori di default vengono presi dai secrets, ma rimangono modificabili se serve
     with st.expander("⚙️ Configurazione Drive", expanded=True):
         tmpl = st.text_input("ID Template PPT", value=DEF_TEMPLATE_ID)
         fold = st.text_input("ID Cartella Output", value=DEF_FOLDER_ID)
@@ -336,7 +343,7 @@ elif st.session_state.app_state == "EDIT":
                             st.session_state.final_images[fname]['cover'] = url
                             st.rerun()
                 
-                # Visualizzazione Immagine AI (se presente e selezionata come cover)
+                # Visualizzazione Immagine AI
                 curr_url = st.session_state.final_images[fname].get('cover')
                 if curr_url:
                     st.image(curr_url, caption="Immagine Attiva", use_container_width=True)
