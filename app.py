@@ -6,13 +6,15 @@ from google.cloud import storage
 import vertexai
 from vertexai.preview.vision_models import ImageGenerationModel
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 import json
 import os
 import time
 import uuid
+import io
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Slide Monster: GOD MODE (Gemini 3)", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Slide Monster: GOD MODE", page_icon="⚡", layout="wide")
 
 # ======================================================
 # ⚙️ I TUOI DATI
@@ -28,7 +30,8 @@ DEFAULT_FOLDER_ID = "1wL1oxos7ISS03GzfW0db44XoAk3UocV0"
 # --- GESTIONE STATO ---
 if "app_state" not in st.session_state: st.session_state.app_state = "UPLOAD"
 if "draft_data" not in st.session_state: st.session_state.draft_data = {}
-if "final_images" not in st.session_state: st.session_state.final_images = {} 
+if "final_images" not in st.session_state: st.session_state.final_images = {}
+if "original_images" not in st.session_state: st.session_state.original_images = {} # Nuova memoria per img originali
 
 # --- INIZIALIZZAZIONE ---
 try:
@@ -37,7 +40,6 @@ try:
     else:
         service_account_info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
     
-    # PERMESSI COMPLETI (Scope corretti)
     creds = service_account.Credentials.from_service_account_info(
         service_account_info,
         scopes=[
@@ -64,126 +66,110 @@ with st.sidebar:
     st.header("⚡ Slide Monster")
     
     st.subheader("🧠 Cervello")
-    # FORZIAMO GEMINI 3 PRO PREVIEW COME DEFAULT ASSOLUTO
-    # Se il modello non è nella lista automatica, lo aggiungiamo manualmente.
+    # DEFAULT: GEMINI 3 PRO PREVIEW
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-    except:
-        available_models = []
-
-    # Nome tecnico ufficiale di Gemini 3
+    except: available_models = []
     target_model = "models/gemini-3-pro-preview" 
-    
-    # Se non c'è nella lista (perché è preview nascosta), lo aggiungiamo in cima
-    if target_model not in available_models:
-        available_models.insert(0, target_model)
+    if target_model not in available_models: available_models.insert(0, target_model)
     else:
-        # Se c'è, lo spostiamo in cima per renderlo default
         available_models.remove(target_model)
         available_models.insert(0, target_model)
-
-    # Menu a tendina con Gemini 3 pre-selezionato
     selected_gemini = st.selectbox("Modello Attivo:", available_models, index=0)
     
-    st.caption(f"ID: `{selected_gemini}`")
-
     st.subheader("🎨 Artista")
-    st.caption("Motore: **Imagen 3 (High Fidelity)**")
-    
-    image_styles = [
-        "Fotorealistico (High Fidelity)", 
-        "Cinematico (Film Look)", 
-        "Digital Art (Moderno)", 
-        "Illustrazione 3D (Pixar Style)"
-    ]
-    selected_style = st.selectbox("Stile Visivo:", image_styles, index=0)
+    image_styles = ["Fotorealistico", "Cinematico", "Digital Art", "Illustrazione 3D"]
+    selected_style = st.selectbox("Stile:", image_styles, index=0)
     
     st.divider()
     if st.button("🔄 Reset"):
         st.session_state.app_state = "UPLOAD"
         st.session_state.draft_data = {}
         st.session_state.final_images = {}
+        st.session_state.original_images = {}
         st.rerun()
 
 # --- FUNZIONI CORE ---
 
-def extract_text_from_pptx(file_obj):
+def analyze_pptx_content(file_obj):
+    """Estrae testo e immagini originali dal PPTX"""
     prs = Presentation(file_obj)
     full_text = []
-    for slide in prs.slides:
+    extracted_images = {} # Dizionario: { slide_index: bytes }
+
+    for i, slide in enumerate(prs.slides):
         s_txt = []
+        # 1. Estrazione Testo
         for shape in slide.shapes:
             if hasattr(shape, "text") and shape.text.strip():
                 s_txt.append(shape.text.strip())
+            
+            # 2. Estrazione Immagini (Prendiamo la prima immagine trovata per slide)
+            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                if i not in extracted_images: # Se non abbiamo già preso un'immagine per questa slide
+                    extracted_images[i] = shape.image.blob
+
         full_text.append(" | ".join(s_txt))
-    return "\n---\n".join(full_text)
+    
+    return "\n---\n".join(full_text), extracted_images
 
 def brain_process(text, model_name, style_choice):
-    
     style_instruction = "Photorealistic, highly detailed, 8k resolution"
-    if "Digital Art" in style_choice:
-        style_instruction = "Digital art, vibrant colors, modern corporate style"
-    elif "Illustrazione 3D" in style_choice:
-        style_instruction = "3D render, cute, clay style, bright lighting"
-    elif "Cinematico" in style_choice:
-        style_instruction = "Cinematic shot, dramatic lighting, movie scene"
+    if "Digital Art" in style_choice: style_instruction = "Digital art, vibrant colors"
+    elif "Illustrazione 3D" in style_choice: style_instruction = "3D render, cute, clay style"
+    elif "Cinematico" in style_choice: style_instruction = "Cinematic shot, dramatic lighting"
 
     prompt = f"""
-    Sei un Creative Director esperto. 
-    Analizza il testo fornito e struttura una presentazione efficace.
-    
-    OUTPUT RICHIESTO (JSON):
+    Sei un Creative Director. Analizza il testo e struttura una presentazione.
+    OUTPUT JSON:
     {{
-        "cover": {{ "title": "Titolo Accattivante", "subtitle": "Slogan", "image_prompt": "Descrizione visiva dettagliata in INGLESE per la copertina" }},
+        "cover": {{ "title": "Titolo", "subtitle": "Slogan", "image_prompt": "Descrizione visiva INGLESE" }},
         "slides": [
-            {{ "id": 1, "title": "Titolo Slide 1", "body": "Contenuto sintetico (max 30 parole)", "image_prompt": "Descrizione visiva in INGLESE" }},
-            {{ "id": 2, "title": "Titolo Slide 2", "body": "Contenuto sintetico", "image_prompt": "Descrizione visiva in INGLESE" }},
-            {{ "id": 3, "title": "Titolo Slide 3", "body": "Contenuto sintetico", "image_prompt": "Descrizione visiva in INGLESE" }},
-            {{ "id": 4, "title": "Titolo Slide 4", "body": "Contenuto sintetico", "image_prompt": "Descrizione visiva in INGLESE" }},
-            {{ "id": 5, "title": "Titolo Slide 5", "body": "Contenuto sintetico", "image_prompt": "Descrizione visiva in INGLESE" }}
+            {{ "id": 1, "title": "Titolo", "body": "Testo (max 30 parole)", "image_prompt": "Descrizione visiva INGLESE" }},
+            {{ "id": 2, "title": "Titolo", "body": "Testo", "image_prompt": "Descrizione visiva INGLESE" }},
+            {{ "id": 3, "title": "Titolo", "body": "Testo", "image_prompt": "Descrizione visiva INGLESE" }},
+            {{ "id": 4, "title": "Titolo", "body": "Testo", "image_prompt": "Descrizione visiva INGLESE" }},
+            {{ "id": 5, "title": "Titolo", "body": "Testo", "image_prompt": "Descrizione visiva INGLESE" }}
         ]
     }}
-    
-    NOTA SUI PROMPT IMMAGINI: Usa lo stile: {style_instruction}.
+    Style: {style_instruction}.
     """
-    
     model = genai.GenerativeModel(model_name)
     try:
-        # Configurazione per output JSON
-        resp = model.generate_content(
-            f"{prompt}\n\nTESTO SORGENTE:\n{text}", 
-            generation_config={"response_mime_type": "application/json"}
-        )
+        resp = model.generate_content(f"{prompt}\n\nTESTO:\n{text}", generation_config={"response_mime_type": "application/json"})
         return json.loads(resp.text)
     except Exception as e:
-        st.error(f"Errore Gemini ({model_name}): {e}")
+        st.error(f"Errore Gemini: {e}")
         return None
 
-def generate_and_upload_imagen(prompt):
+def upload_bytes_to_bucket(image_bytes):
+    """Carica bytes generici (da PPT o Imagen) sul Bucket e ritorna URL"""
     try:
-        # Imagen 3 è la scelta solida
-        model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-001")
-        
-        images = model.generate_images(
-            prompt=prompt,
-            number_of_images=1,
-            language="en",
-            aspect_ratio="16:9",
-            safety_filter_level="block_some",
-            person_generation="allow_adult"
-        )
-        
-        if not images: return None, "Nessuna immagine generata."
-        
         filename = f"img_{uuid.uuid4()}.png"
         blob = bucket.blob(filename)
-        blob.upload_from_string(images[0]._image_bytes, content_type="image/png")
-        public_url = f"https://storage.googleapis.com/{GCS_BUCKET_NAME}/{filename}"
-        
-        return public_url, None
-        
+        blob.upload_from_string(image_bytes, content_type="image/png")
+        return f"https://storage.googleapis.com/{GCS_BUCKET_NAME}/{filename}"
     except Exception as e:
-        return None, str(e)
+        st.error(f"Errore Upload Bucket: {e}")
+        return None
+
+def generate_imagen_safe(prompt):
+    """Genera con Imagen 3 gestendo la Quota 429"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-001")
+            images = model.generate_images(prompt=prompt, number_of_images=1, aspect_ratio="16:9", person_generation="allow_adult")
+            if images: return images[0]._image_bytes
+        except Exception as e:
+            if "429" in str(e) or "Quota" in str(e):
+                wait = 10 * (attempt + 1)
+                st.warning(f"🚦 Quota raggiunta. Attendo {wait}s... ({attempt+1}/{max_retries})")
+                time.sleep(wait)
+            else:
+                st.error(f"Errore Imagen: {e}")
+                return None
+    return None
 
 def find_image_element_id_smart(prs_id, label):
     label_clean = label.strip().upper()
@@ -193,36 +179,31 @@ def find_image_element_id_smart(prs_id, label):
             for el in slide.get('pageElements', []):
                 if 'description' in el and el['description'].strip().upper() == label_clean:
                     return el['objectId']
-    except Exception as e:
-        print(f"Errore ricerca ID: {e}")
+    except: pass
     return None
 
 def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map):
     try:
-        # 1. COPIA FILE (Ora funziona se hai abilitato Drive API)
         copy = drive_service.files().copy(
-            fileId=template_id, 
-            body={'name': filename, 'parents': [folder_id]}, 
-            supportsAllDrives=True
+            fileId=template_id, body={'name': filename, 'parents': [folder_id]}, supportsAllDrives=True
         ).execute()
         new_id = copy.get('id')
         
-        # 2. TESTI
         reqs = []
+        # Cover
         if 'cover' in ai_data:
             reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': ai_data['cover'].get('title', '')}})
             reqs.append({'replaceAllText': {'containsText': {'text': '{{SUBTITLE}}'}, 'replaceText': ai_data['cover'].get('subtitle', '')}})
-        
+        # Slides
         if 'slides' in ai_data:
             for i, s in enumerate(ai_data['slides']):
                 idx = i + 1
                 reqs.append({'replaceAllText': {'containsText': {'text': f'{{{{TITLE_{idx}}}}}'}, 'replaceText': s.get('title', '')}})
                 reqs.append({'replaceAllText': {'containsText': {'text': f'{{{{BODY_{idx}}}}}'}, 'replaceText': s.get('body', '')}})
                 
-        if reqs:
-            slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
+        if reqs: slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
 
-        # 3. IMMAGINI
+        # Immagini
         for label, url in urls_map.items():
             if url:
                 el_id = find_image_element_id_smart(new_id, label)
@@ -231,144 +212,146 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map):
                     try:
                         slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': [req]}).execute()
                         time.sleep(0.5) 
-                    except Exception as e:
-                        print(f"Errore immagine {label}: {e}")
-        
+                    except: pass
         return new_id
-    except Exception as e:
-        st.error(f"Errore finale Worker: {e}")
-        return None
+    except Exception as e: return None
 
 # ==========================================
-# INTERFACCIA UTENTE
+# INTERFACCIA
 # ==========================================
-
 st.title("⚡ Slide Monster: GOD MODE")
-
 col1, col2 = st.columns([1, 2])
 with col1:
-    st.info("Configurazione Attiva")
     tmpl = st.text_input("ID Template", value=DEFAULT_TEMPLATE_ID)
-    fold = st.text_input("ID Cartella Output", value=DEFAULT_FOLDER_ID)
+    fold = st.text_input("ID Cartella", value=DEFAULT_FOLDER_ID)
 
-# --- FASE 1: UPLOAD & ANALISI ---
+# --- FASE 1: UPLOAD ---
 if st.session_state.app_state == "UPLOAD":
     with col2:
-        st.write("### 1. Carica i file")
-        uploaded = st.file_uploader("Trascina qui i PPTX", accept_multiple_files=True, type=['pptx'])
-        
-        if st.button("🧠 Analizza (Gemini 3 Pro)", type="primary"):
+        uploaded = st.file_uploader("PPTX", accept_multiple_files=True, type=['pptx'])
+        if st.button("🧠 Analizza", type="primary"):
             if uploaded:
                 st.session_state.draft_data = {}
                 st.session_state.final_images = {}
+                st.session_state.original_images = {}
                 
                 bar = st.progress(0)
                 for i, f in enumerate(uploaded):
                     fname = f.name.replace(".pptx", "") + "_ITA"
-                    txt = extract_text_from_pptx(f)
+                    
+                    # Estrazione avanzata (Testo + Immagini)
+                    txt, imgs_dict = analyze_pptx_content(f)
                     
                     data = brain_process(txt, selected_gemini, selected_style)
-                    
                     if data:
-                        st.session_state.draft_data[fname] = {"ai_data": data, "original_file": f.name}
-                        st.session_state.final_images[fname] = {} 
+                        st.session_state.draft_data[fname] = {"ai_data": data}
+                        st.session_state.final_images[fname] = {}
+                        st.session_state.original_images[fname] = imgs_dict # Salviamo le immagini originali
                     
                     bar.progress((i+1)/len(uploaded))
-                
                 st.session_state.app_state = "EDIT"
                 st.rerun()
 
-# --- FASE 2: SALA DI REGIA ---
+# --- FASE 2: EDITING AVANZATO ---
 elif st.session_state.app_state == "EDIT":
     st.divider()
-    st.write("### 2. Sala di Regia")
-    st.caption(f"Cervello: {selected_gemini} | Artista: Imagen 3")
+    st.info("✏️ Modifica i testi e scegli le immagini (Originali o AI).")
 
     for fname, content in st.session_state.draft_data.items():
         data = content['ai_data']
+        orig_imgs = st.session_state.original_images.get(fname, {})
         
-        with st.expander(f"📂 Progetto: **{fname}**", expanded=True):
+        with st.expander(f"📂 **{fname}**", expanded=True):
             
-            # === COPERTINA ===
-            st.markdown("#### Copertina")
-            c1, c2 = st.columns([2, 1])
-            with c1:
-                st.write(f"**Titolo:** {data['cover'].get('title')}")
-                p_cov = st.text_area("Prompt Cover", value=data['cover'].get('image_prompt', ''), height=100, key=f"p_c_{fname}")
-                st.session_state.draft_data[fname]['ai_data']['cover']['image_prompt'] = p_cov
-                
-                if st.button("✨ Genera Cover", key=f"b_c_{fname}"):
+            # --- COPERTINA ---
+            st.markdown("#### 1. Copertina")
+            c1, c2, c3 = st.columns([1, 1, 1])
+            
+            with c1: # TESTI
+                new_t = st.text_input("Titolo", value=data['cover'].get('title', ''), key=f"t_c_{fname}")
+                new_s = st.text_input("Sottotitolo", value=data['cover'].get('subtitle', ''), key=f"s_c_{fname}")
+                st.session_state.draft_data[fname]['ai_data']['cover']['title'] = new_t
+                st.session_state.draft_data[fname]['ai_data']['cover']['subtitle'] = new_s
+
+            with c2: # IMAGEN
+                p_cov = st.text_area("Prompt AI", value=data['cover'].get('image_prompt', ''), height=70, key=f"p_c_{fname}")
+                if st.button("🎨 Genera (Imagen)", key=f"b_gen_c_{fname}"):
                     with st.spinner("Generazione..."):
-                        url, err = generate_and_upload_imagen(p_cov)
-                        if url: 
+                        img_bytes = generate_imagen_safe(p_cov)
+                        if img_bytes:
+                            url = upload_bytes_to_bucket(img_bytes)
                             st.session_state.final_images[fname]['cover'] = url
                             st.rerun()
-                        else: st.error(f"Errore: {err}")
-            
-            with c2:
-                url = st.session_state.final_images[fname].get('cover')
-                if url: 
-                    st.image(url, use_container_width=True)
-                    st.success("OK")
-                else:
-                    st.warning("Da generare")
 
-            # === SLIDE INTERNE ===
+            with c3: # ORIGINALE vs PREVIEW
+                # Cerchiamo l'immagine della slide 0 (prima slide)
+                orig_bytes = orig_imgs.get(0) 
+                if orig_bytes:
+                    st.image(orig_bytes, caption="Originale da PPT", width=150)
+                    if st.button("Usa Originale", key=f"b_orig_c_{fname}"):
+                        url = upload_bytes_to_bucket(orig_bytes) # Carichiamo l'originale nel bucket
+                        st.session_state.final_images[fname]['cover'] = url
+                        st.success("Selezionata!")
+                        time.sleep(1)
+                        st.rerun()
+                
+                # Mostra selezione attuale
+                curr_url = st.session_state.final_images[fname].get('cover')
+                if curr_url: st.success("✅ Immagine Pronta")
+
+            # --- SLIDE INTERNE ---
             if 'slides' in data:
                 st.markdown("---")
-                st.markdown("#### Slide Interne")
                 for idx, slide in enumerate(data['slides']):
                     st.caption(f"Slide {idx+1}")
-                    sc1, sc2 = st.columns([2, 1])
+                    sc1, sc2, sc3 = st.columns([1, 1, 1])
                     
-                    with sc1:
-                        st.write(f"**{slide.get('title')}**")
-                        p_sl = st.text_area("Prompt", value=slide.get('image_prompt', ''), height=80, key=f"p_s_{idx}_{fname}")
-                        st.session_state.draft_data[fname]['ai_data']['slides'][idx]['image_prompt'] = p_sl
-                        
-                        if st.button(f"✨ Genera Slide {idx+1}", key=f"b_s_{idx}_{fname}"):
+                    with sc1: # TESTI MODIFICABILI
+                        new_st = st.text_input(f"Titolo Slide {idx+1}", value=slide.get('title', ''), key=f"t_s_{idx}_{fname}")
+                        new_sb = st.text_area(f"Body Slide {idx+1}", value=slide.get('body', ''), height=100, key=f"b_s_{idx}_{fname}")
+                        st.session_state.draft_data[fname]['ai_data']['slides'][idx]['title'] = new_st
+                        st.session_state.draft_data[fname]['ai_data']['slides'][idx]['body'] = new_sb
+
+                    with sc2: # IMAGEN
+                        p_sl = st.text_area("Prompt AI", value=slide.get('image_prompt', ''), height=70, key=f"p_p_{idx}_{fname}")
+                        if st.button(f"🎨 Genera S{idx+1}", key=f"btn_ai_{idx}_{fname}"):
                             with st.spinner("Generazione..."):
-                                url, err = generate_and_upload_imagen(p_sl)
-                                if url:
+                                img_bytes = generate_imagen_safe(p_sl)
+                                if img_bytes:
+                                    url = upload_bytes_to_bucket(img_bytes)
                                     st.session_state.final_images[fname][f"slide_{idx+1}"] = url
                                     st.rerun()
-                                else: st.error(err)
-                    
-                    with sc2:
-                        url = st.session_state.final_images[fname].get(f"slide_{idx+1}")
-                        if url: st.image(url, use_container_width=True)
 
-    # --- FOOTER ---
+                    with sc3: # ORIGINALE
+                        # Slide 1 generata corrisponde a Slide 1 del PPT (indice 1, se consideriamo cover=0)
+                        # Nota: L'indice potrebbe sfasare se il PPT originale ha una struttura diversa, ma proviamo 1:1
+                        orig_bytes_sl = orig_imgs.get(idx + 1) 
+                        if orig_bytes_sl:
+                            st.image(orig_bytes_sl, caption="Originale", width=150)
+                            if st.button(f"Usa Originale", key=f"btn_org_{idx}_{fname}"):
+                                url = upload_bytes_to_bucket(orig_bytes_sl)
+                                st.session_state.final_images[fname][f"slide_{idx+1}"] = url
+                                st.success("Ok")
+                                time.sleep(0.5)
+                                st.rerun()
+                                
+                        curr_url_sl = st.session_state.final_images[fname].get(f"slide_{idx+1}")
+                        if curr_url_sl: st.success("✅ Pronta")
+                        else: st.warning("Manca Immagine")
+
+    # FOOTER
     st.divider()
-    col_back, col_save = st.columns([1, 4])
-    with col_back:
-        if st.button("⬅️ Indietro"):
-            st.session_state.app_state = "UPLOAD"
-            st.rerun()
-    
-    with col_save:
-        if st.button("💾 SALVA TUTTO SU DRIVE", type="primary", use_container_width=True):
-            progress_bar = st.progress(0)
-            msg_box = st.empty()
+    if st.button("💾 SALVA SU DRIVE", type="primary", use_container_width=True):
+        bar = st.progress(0)
+        for i, (fname, content) in enumerate(st.session_state.draft_data.items()):
+            url_map = {}
+            saved = st.session_state.final_images.get(fname, {})
+            if 'cover' in saved: url_map['IMG_COVER'] = saved['cover']
+            for k, v in saved.items():
+                if k.startswith("slide_"): url_map[f"IMG_{k.split('_')[1]}"] = v
             
-            i = 0
-            for fname, content in st.session_state.draft_data.items():
-                msg_box.write(f"Scrittura file **{fname}**...")
-                
-                url_map = {}
-                saved_imgs = st.session_state.final_images.get(fname, {})
-                if 'cover' in saved_imgs: url_map['IMG_COVER'] = saved_imgs['cover']
-                for k, v in saved_imgs.items():
-                    if k.startswith("slide_"): 
-                        num = k.split("_")[1]
-                        url_map[f"IMG_{num}"] = v
-                
-                res_id = worker_bot_finalize(tmpl, fold, fname, content['ai_data'], url_map)
-                
-                if res_id: st.toast(f"✅ Creato: {fname}")
-                else: st.error(f"❌ Fallito: {fname}")
-                i+=1
-                progress_bar.progress(i/len(st.session_state.draft_data))
-                
-            st.success("Tutte le presentazioni sono state create!")
-            st.balloons()
+            res = worker_bot_finalize(tmpl, fold, fname, content['ai_data'], url_map)
+            if res: st.toast(f"✅ Fatto: {fname}")
+            else: st.error(f"❌ Errore: {fname}")
+            bar.progress((i+1)/len(st.session_state.draft_data))
+        st.balloons()
