@@ -105,37 +105,44 @@ with st.sidebar:
 
 # --- FUNZIONI CORE ---
 
-def get_images_recursive(shapes):
+def get_images_recursive_by_weight(shapes):
     """
-    Cerca immagini ricorsivamente dentro Gruppi e Placeholder.
-    Ritorna lista di tuple: (Area, Blob)
+    Cerca immagini ricorsivamente.
+    CRITERIO VINCENTE: PESO IN BYTE (len(blob)).
+    Ritorna lista di tuple: (PesoBytes, Blob)
     """
     images_found = []
     for shape in shapes:
         # Caso 1: Immagine diretta
         if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
             try:
-                area = shape.width * shape.height
-                images_found.append((area, shape.image.blob))
+                # ---------------------------------------------------------
+                # QUI LA MAGIA: Calcoliamo il peso del file, non l'area.
+                # ---------------------------------------------------------
+                blob = shape.image.blob
+                weight = len(blob) # Numero di bytes
+                images_found.append((weight, blob))
             except: pass
             
         # Caso 2: Gruppi (Entra dentro ricorsivamente)
         elif shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-            images_found.extend(get_images_recursive(shape.shapes))
+            images_found.extend(get_images_recursive_by_weight(shape.shapes))
             
-        # Caso 3: Placeholder Immagine (A volte contengono l'immagine come riempimento)
+        # Caso 3: Placeholder Immagine
         elif shape.shape_type == MSO_SHAPE_TYPE.PLACEHOLDER:
             if hasattr(shape, "image"):
                 try:
-                    area = shape.width * shape.height
-                    images_found.append((area, shape.image.blob))
+                    blob = shape.image.blob
+                    weight = len(blob)
+                    images_found.append((weight, blob))
                 except: pass
                 
     return images_found
 
 def analyze_pptx_content(file_obj):
     """
-    Estrae testo (slide + note) e immagini (Torneo Globale Avanzato).
+    Estrae testo e immagini.
+    Logica Immagini: Vince la più PESANTE (KB/MB).
     """
     prs = Presentation(file_obj)
     full_text = []
@@ -161,20 +168,20 @@ def analyze_pptx_content(file_obj):
         
         full_text.append(f"SLIDE {i+1} CONTENUTO: {visible_text} {notes_text}")
 
-        # 3. IMMAGINI (Torneo Globale Avanzato)
+        # 3. IMMAGINI (Torneo dei Pesi Massimi)
         candidates = []
         
         # Livello Slide
-        candidates.extend(get_images_recursive(slide.shapes))
+        candidates.extend(get_images_recursive_by_weight(slide.shapes))
         # Livello Layout
         if slide.slide_layout:
-            candidates.extend(get_images_recursive(slide.slide_layout.shapes))
+            candidates.extend(get_images_recursive_by_weight(slide.slide_layout.shapes))
         # Livello Master
         if slide.slide_layout and slide.slide_layout.slide_master:
-            candidates.extend(get_images_recursive(slide.slide_layout.slide_master.shapes))
+            candidates.extend(get_images_recursive_by_weight(slide.slide_layout.slide_master.shapes))
         
         if candidates:
-            # Ordina per Area decrescente (la più grande vince)
+            # Ordina per PESO decrescente (il file più grosso vince)
             candidates.sort(key=lambda x: x[0], reverse=True)
             extracted_images[i] = candidates[0][1]
     
@@ -186,12 +193,11 @@ def brain_process(text, model_name, style_choice):
     elif "Illustrazione 3D" in style_choice: style_instruction = "3D render, cute, clay style"
     elif "Cinematico" in style_choice: style_instruction = "Cinematic shot, dramatic lighting"
 
-    # PROMPT AGGIORNATO (SUBTITLE + COSTI UNICI)
     prompt = f"""
-    Sei un Event Manager che deve vendere un'attività di Team Building.
+    Sei un Event Manager che deve vendere un'attività di Team Building a un cliente.
     Analizza il testo fornito (Slide + Note) per estrarre i contenuti.
     
-    ⚠️ OBIETTIVI:
+    ⚠️ OBIETTIVI COPYWRITING:
     - **Cover:** Titolo e Sottotitolo (Slogan).
     - **Pag 2 (Azione):** Dinamica del gioco, energica.
     - **Pag 3 (Emozione):** Atmosfera, divertimento, effetto WOW.
@@ -239,7 +245,6 @@ def brain_process(text, model_name, style_choice):
         return None
 
 def translate_struct_to_english(ai_data):
-    """Traduce i valori del JSON in Inglese"""
     prompt = """
     You are a professional copywriter. Translate the values in the following JSON from Italian to English.
     Do NOT translate the keys. Do NOT translate 'image_prompt'.
@@ -407,7 +412,7 @@ if st.session_state.app_state == "UPLOAD":
                     st.session_state.app_state = "EDIT"
                     st.rerun()
         with col_act2:
-            st.caption("Analisi Emozionale + Estrazione Tecnica Costi (Pagina 7 Unificata).")
+            st.caption("Analisi: Logica Immagini 'Peso Massimo' + Sottotitoli + Costi.")
 
 # --- FASE 2: EDITING ---
 elif st.session_state.app_state == "EDIT":
@@ -423,15 +428,13 @@ elif st.session_state.app_state == "EDIT":
                 url_map = {}
                 saved = st.session_state.final_images.get(fname, {})
                 
-                # MAPPING IMMAGINI
                 if 'cover' in saved: url_map['IMG_1'] = saved['cover'] 
                 if 'desc_1' in saved: url_map['IMG_2'] = saved['desc_1'] 
                 if 'desc_2' in saved: url_map['IMG_3'] = saved['desc_2'] 
                 
-                # ITA
                 st.toast(f"🇮🇹 Saving ITA: {fname}")
                 res_ita = worker_bot_finalize(tmpl, fold, fname, content['ai_data'], url_map, translate_mode=False)
-                # ENG
+                
                 if make_english:
                     fname_eng = fname.replace("_ITA", "_ENG")
                     st.toast(f"🇬🇧 Saving ENG: {fname_eng}")
@@ -449,7 +452,6 @@ elif st.session_state.app_state == "EDIT":
         
         st.markdown(f"## 📂 {fname}")
         
-        # AGGIUNTO IL TAB COSTI
         tabs = st.tabs(["🏠 1. Cover", "📄 2. L'Esperienza", "📄 3. L'Emozione", "🛠️ 4. Scheda Tecnica", "💰 7. Costi"])
         
         # --- TAB 1: COVER ---
@@ -471,7 +473,7 @@ elif st.session_state.app_state == "EDIT":
             with c3:
                 st.markdown("#### Originale")
                 if orig_imgs.get(0):
-                    st.image(orig_imgs[0], width=150)
+                    st.image(orig_imgs[0], width=150, caption=f"Peso: {len(orig_imgs[0])//1024} KB")
                     if st.button("Usa Originale", key=f"bo1_{fname}"):
                         st.session_state.final_images[fname]['cover'] = upload_bytes_to_bucket(orig_imgs[0]); st.rerun()
 
@@ -494,7 +496,7 @@ elif st.session_state.app_state == "EDIT":
             with c3:
                 st.markdown("#### Originale")
                 if orig_imgs.get(1):
-                    st.image(orig_imgs[1], width=150)
+                    st.image(orig_imgs[1], width=150, caption=f"Peso: {len(orig_imgs[1])//1024} KB")
                     if st.button("Usa Originale", key=f"bo2_{fname}"):
                         st.session_state.final_images[fname]['desc_1'] = upload_bytes_to_bucket(orig_imgs[1]); st.rerun()
 
@@ -517,7 +519,7 @@ elif st.session_state.app_state == "EDIT":
             with c3:
                 st.markdown("#### Originale")
                 if orig_imgs.get(2):
-                    st.image(orig_imgs[2], width=150)
+                    st.image(orig_imgs[2], width=150, caption=f"Peso: {len(orig_imgs[2])//1024} KB")
                     if st.button("Usa Originale", key=f"bo3_{fname}"):
                         st.session_state.final_images[fname]['desc_2'] = upload_bytes_to_bucket(orig_imgs[2]); st.rerun()
 
@@ -541,7 +543,7 @@ elif st.session_state.app_state == "EDIT":
         # --- TAB 5: COSTI (UNICO CAMPO) ---
         with tabs[4]:
             st.markdown("#### 💰 Dettagli Economici (Slide 7)")
-            det = st.text_area("Dettaglio Costi (Include/Esclude)", value=data.get('page_7_costi', {}).get('dettaglio', ''), height=300, key=f"c_det_{fname}")
+            det = st.text_area("Dettaglio Costi", value=data.get('page_7_costi', {}).get('dettaglio', ''), height=300, key=f"c_det_{fname}")
             
             if 'page_7_costi' not in st.session_state.draft_data[fname]['ai_data']:
                 st.session_state.draft_data[fname]['ai_data']['page_7_costi'] = {}
