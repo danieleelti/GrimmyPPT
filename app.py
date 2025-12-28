@@ -17,13 +17,12 @@ import io
 st.set_page_config(page_title="Slide Monster: GOD MODE", page_icon="⚡", layout="wide")
 
 # ======================================================
-# ⚙️ I TUOI DATI (Costanti di progetto)
+# ⚙️ I TUOI DATI
 # ======================================================
 GCP_PROJECT_ID = "gen-lang-client-0247086002"
 GCS_BUCKET_NAME = "bucket_grimmy"
 GCP_LOCATION = "us-central1"
 
-# Default visualizzati nei campi di input
 DEF_TEMPLATE_ID = "1BHac-ciWsMCxjtNrv8RxB68LyDi9cZrV6VMWEeXCw5A" 
 DEF_FOLDER_ID = "1wL1oxos7ISS03GzfW0db44XoAk3UocV0"
 # ======================================================
@@ -63,20 +62,19 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# SIDEBAR (CONFIGURAZIONE & CONTROLLI)
+# SIDEBAR
 # ==========================================
 with st.sidebar:
     st.header("⚡ Slide Monster")
     
-    # 1. SETTAGGI TECNICI (SPOSTATI QUI)
     with st.expander("⚙️ Configurazione Drive", expanded=True):
         tmpl = st.text_input("ID Template PPT", value=DEF_TEMPLATE_ID)
         fold = st.text_input("ID Cartella Output", value=DEF_FOLDER_ID)
 
     st.divider()
 
-    # 2. CERVELLO (GEMINI 3 PRO DEFAULT)
     st.subheader("🧠 Cervello")
+    # DEFAULT: GEMINI 3 PRO PREVIEW
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
     except: available_models = []
@@ -90,7 +88,6 @@ with st.sidebar:
 
     selected_gemini = st.selectbox("Modello:", available_models, index=0)
 
-    # 3. ARTISTA
     st.subheader("🎨 Artista")
     image_styles = ["Fotorealistico", "Cinematico", "Digital Art", "Illustrazione 3D"]
     selected_style = st.selectbox("Stile:", image_styles, index=0)
@@ -105,6 +102,18 @@ with st.sidebar:
 
 # --- FUNZIONI CORE ---
 
+def get_largest_image_from_shapes(shapes):
+    """Trova l'immagine più grande nella lista di forme (Area = W * H)"""
+    max_area = 0
+    best_blob = None
+    for shape in shapes:
+        if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+            current_area = shape.width * shape.height
+            if current_area > max_area:
+                max_area = current_area
+                best_blob = shape.image.blob
+    return best_blob
+
 def analyze_pptx_content(file_obj):
     """Estrae testo e immagini (Deep Search: Slide -> Layout -> Master)"""
     prs = Presentation(file_obj)
@@ -118,22 +127,14 @@ def analyze_pptx_content(file_obj):
                 s_txt.append(shape.text.strip())
         full_text.append(" | ".join(s_txt))
 
-        # Ricerca Immagine Gerarchica
-        found_img = None
-        # 1. Slide
-        for shape in slide.shapes:
-            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                found_img = shape.image.blob; break
-        # 2. Layout
+        # Ricerca Immagine Gerarchica (Vince la più grande)
+        found_img = get_largest_image_from_shapes(slide.shapes)
+        
         if not found_img and slide.slide_layout:
-            for shape in slide.slide_layout.shapes:
-                if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                    found_img = shape.image.blob; break
-        # 3. Master
+            found_img = get_largest_image_from_shapes(slide.slide_layout.shapes)
+            
         if not found_img and slide.slide_layout and slide.slide_layout.slide_master:
-            for shape in slide.slide_layout.slide_master.shapes:
-                if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                    found_img = shape.image.blob; break
+            found_img = get_largest_image_from_shapes(slide.slide_layout.slide_master.shapes)
         
         if found_img: extracted_images[i] = found_img
     
@@ -243,11 +244,10 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map):
 # ==========================================
 st.title("⚡ Slide Monster: GOD MODE")
 
-# --- FASE 1: UPLOAD (FULL WIDTH) ---
+# --- FASE 1: UPLOAD ---
 if st.session_state.app_state == "UPLOAD":
     st.markdown("### 1. Carica le presentazioni")
     
-    # Area di upload grande e centrale
     with st.container(border=True):
         uploaded = st.file_uploader("Trascina qui i tuoi file PPTX", accept_multiple_files=True, type=['pptx'])
         
@@ -275,15 +275,14 @@ if st.session_state.app_state == "UPLOAD":
                     st.session_state.app_state = "EDIT"
                     st.rerun()
         with col_act2:
-            st.caption("Il sistema userà **Gemini 3 Pro Preview** per i testi e cercherà le immagini originali anche nei Master Layout.")
+            st.caption("Analisi intelligente: Gemini 3 Pro + Estrazione Immagini HD (vince l'immagine più grande).")
 
-# --- FASE 2: EDITING (FULL WIDTH + TABS) ---
+# --- FASE 2: EDITING ---
 elif st.session_state.app_state == "EDIT":
     
-    # Header di sezione
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
-        st.info("✏️ **Sala di Regia**: Naviga tra le pagine, modifica i testi e scegli le immagini.")
+        st.info("✏️ **Sala di Regia**: Layout verticale. Modifica i testi sopra, gestisci le immagini sotto.")
     with col_h2:
         if st.button("💾 SALVA TUTTO SU DRIVE", type="primary", use_container_width=True):
             bar = st.progress(0)
@@ -301,96 +300,106 @@ elif st.session_state.app_state == "EDIT":
             st.balloons()
             time.sleep(2)
 
-    # Iterazione Progetti
     for fname, content in st.session_state.draft_data.items():
         data = content['ai_data']
         orig_imgs = st.session_state.original_images.get(fname, {})
         
         st.markdown(f"## 📂 {fname}")
         
-        # TAB INTERFACE
         tab_labels = ["🏠 Copertina"] + [f"📄 Slide {i+1}" for i in range(len(data.get('slides', [])))]
         tabs = st.tabs(tab_labels)
         
-        # --- TAB 0: COPERTINA ---
+        # TAB 0: COPERTINA
         with tabs[0]:
-            c1, c2, c3 = st.columns([1.2, 1, 1]) # Un po' più spazio ai testi
-            
-            with c1: # TESTI
-                st.markdown("#### 📝 Contenuti")
-                new_t = st.text_input("Titolo", value=data['cover'].get('title', ''), key=f"t_c_{fname}")
-                new_s = st.text_input("Sottotitolo", value=data['cover'].get('subtitle', ''), key=f"s_c_{fname}")
-                st.session_state.draft_data[fname]['ai_data']['cover']['title'] = new_t
-                st.session_state.draft_data[fname]['ai_data']['cover']['subtitle'] = new_s
+            # --- SEZIONE TESTI (SOPRA) ---
+            st.markdown("### 📝 Contenuti Testuali")
+            new_t = st.text_input("Titolo Copertina", value=data['cover'].get('title', ''), key=f"t_c_{fname}")
+            new_s = st.text_input("Sottotitolo", value=data['cover'].get('subtitle', ''), key=f"s_c_{fname}")
+            st.session_state.draft_data[fname]['ai_data']['cover']['title'] = new_t
+            st.session_state.draft_data[fname]['ai_data']['cover']['subtitle'] = new_s
 
-            with c2: # AI GENERATION
-                st.markdown("#### 🤖 Genera Immagine")
-                p_cov = st.text_area("Prompt", value=data['cover'].get('image_prompt', ''), height=80, key=f"p_c_{fname}")
-                if st.button("✨ Crea con Imagen 3", key=f"b_gen_c_{fname}", use_container_width=True):
+            st.markdown("---")
+            
+            # --- SEZIONE VISUAL (SOTTO, 2 COLONNE) ---
+            col_ai, col_orig = st.columns([1, 1], gap="large")
+
+            # COLONNA SINISTRA: AI
+            with col_ai:
+                st.markdown("#### 🤖 Laboratorio AI")
+                p_cov = st.text_area("Prompt Imagen", value=data['cover'].get('image_prompt', ''), height=100, key=f"p_c_{fname}")
+                
+                if st.button("✨ Genera Immagine (AI)", key=f"b_gen_c_{fname}", use_container_width=True):
                     with st.spinner("Generazione..."):
                         img_bytes = generate_imagen_safe(p_cov)
                         if img_bytes:
                             url = upload_bytes_to_bucket(img_bytes)
                             st.session_state.final_images[fname]['cover'] = url
                             st.rerun()
+                
+                # Visualizzazione Immagine AI (se presente e selezionata come cover)
+                curr_url = st.session_state.final_images[fname].get('cover')
+                if curr_url:
+                    st.image(curr_url, caption="Immagine Attiva", use_container_width=True)
+                    st.success("✅ Questa immagine verrà usata")
 
-            with c3: # ORIGINALE & STATUS
-                st.markdown("#### 🖼️ Selezione")
-                # Immagine Originale (Indice 0)
+            # COLONNA DESTRA: ORIGINALE
+            with col_orig:
+                st.markdown("#### 🖼️ Originale PPT")
                 orig_bytes = orig_imgs.get(0)
                 if orig_bytes:
-                    st.image(orig_bytes, caption="Originale rilevata", width=180)
-                    if st.button("Usa Originale", key=f"b_orig_c_{fname}", use_container_width=True):
+                    st.image(orig_bytes, caption="Estratta dal PPT (la più grande)", use_container_width=True)
+                    if st.button("Usa questa Originale", key=f"b_orig_c_{fname}", use_container_width=True):
                         url = upload_bytes_to_bucket(orig_bytes)
                         st.session_state.final_images[fname]['cover'] = url
                         st.rerun()
                 else:
-                    st.caption("Nessuna immagine originale trovata.")
-                
-                # Feedback Stato
-                curr_url = st.session_state.final_images[fname].get('cover')
-                if curr_url: st.success("✅ Immagine PRONTA")
-                else: st.warning("⚠️ Manca Immagine")
+                    st.warning("Nessuna immagine trovata in questa slide/layout.")
 
-        # --- TAB SLIDES ---
+        # TAB SLIDES
         if 'slides' in data:
             for idx, slide in enumerate(data['slides']):
                 with tabs[idx+1]:
-                    sc1, sc2, sc3 = st.columns([1.2, 1, 1])
-                    
-                    with sc1: # TESTI
-                        st.markdown("#### 📝 Contenuti")
-                        new_st = st.text_input(f"Titolo", value=slide.get('title', ''), key=f"t_s_{idx}_{fname}")
-                        new_sb = st.text_area(f"Body", value=slide.get('body', ''), height=120, key=f"b_s_{idx}_{fname}")
-                        st.session_state.draft_data[fname]['ai_data']['slides'][idx]['title'] = new_st
-                        st.session_state.draft_data[fname]['ai_data']['slides'][idx]['body'] = new_sb
+                    # --- SEZIONE TESTI (SOPRA) ---
+                    st.markdown("### 📝 Contenuti Testuali")
+                    new_st = st.text_input(f"Titolo Slide {idx+1}", value=slide.get('title', ''), key=f"t_s_{idx}_{fname}")
+                    new_sb = st.text_area(f"Corpo del testo", value=slide.get('body', ''), height=150, key=f"b_s_{idx}_{fname}")
+                    st.session_state.draft_data[fname]['ai_data']['slides'][idx]['title'] = new_st
+                    st.session_state.draft_data[fname]['ai_data']['slides'][idx]['body'] = new_sb
 
-                    with sc2: # AI GENERATION
-                        st.markdown("#### 🤖 Genera Immagine")
-                        p_sl = st.text_area("Prompt", value=slide.get('image_prompt', ''), height=80, key=f"p_p_{idx}_{fname}")
-                        if st.button(f"✨ Crea con Imagen 3", key=f"btn_ai_{idx}_{fname}", use_container_width=True):
+                    st.markdown("---")
+                    
+                    # --- SEZIONE VISUAL (SOTTO, 2 COLONNE) ---
+                    col_ai, col_orig = st.columns([1, 1], gap="large")
+
+                    # COLONNA SINISTRA: AI
+                    with col_ai:
+                        st.markdown("#### 🤖 Laboratorio AI")
+                        p_sl = st.text_area("Prompt Imagen", value=slide.get('image_prompt', ''), height=100, key=f"p_p_{idx}_{fname}")
+                        
+                        if st.button(f"✨ Genera Immagine (AI)", key=f"btn_ai_{idx}_{fname}", use_container_width=True):
                             with st.spinner("Generazione..."):
                                 img_bytes = generate_imagen_safe(p_sl)
                                 if img_bytes:
                                     url = upload_bytes_to_bucket(img_bytes)
                                     st.session_state.final_images[fname][f"slide_{idx+1}"] = url
                                     st.rerun()
+                        
+                        curr_url_sl = st.session_state.final_images[fname].get(f"slide_{idx+1}")
+                        if curr_url_sl:
+                            st.image(curr_url_sl, caption="Immagine Attiva", use_container_width=True)
+                            st.success("✅ Questa immagine verrà usata")
 
-                    with sc3: # ORIGINALE & STATUS
-                        st.markdown("#### 🖼️ Selezione")
-                        # Slide idx+1
+                    # COLONNA DESTRA: ORIGINALE
+                    with col_orig:
+                        st.markdown("#### 🖼️ Originale PPT")
                         orig_bytes_sl = orig_imgs.get(idx + 1)
                         if orig_bytes_sl:
-                            st.image(orig_bytes_sl, caption="Originale rilevata", width=180)
-                            if st.button(f"Usa Originale", key=f"btn_org_{idx}_{fname}", use_container_width=True):
+                            st.image(orig_bytes_sl, caption="Estratta dal PPT", use_container_width=True)
+                            if st.button(f"Usa questa Originale", key=f"btn_org_{idx}_{fname}", use_container_width=True):
                                 url = upload_bytes_to_bucket(orig_bytes_sl)
                                 st.session_state.final_images[fname][f"slide_{idx+1}"] = url
                                 st.rerun()
                         else:
-                            st.caption("Nessuna immagine originale trovata.")
-
-                        curr_url_sl = st.session_state.final_images[fname].get(f"slide_{idx+1}")
-                        if curr_url_sl: st.success("✅ Immagine PRONTA")
-                        else: st.warning("⚠️ Manca Immagine")
+                            st.warning("Nessuna immagine trovata.")
         
         st.markdown("---")
