@@ -105,23 +105,37 @@ with st.sidebar:
 
 # --- FUNZIONI CORE ---
 
-def get_all_images_from_shapes(shapes):
-    """Raccoglie tutte le immagini e le loro dimensioni"""
-    images_found = [] 
+def get_images_recursive(shapes):
+    """
+    Cerca immagini ricorsivamente dentro Gruppi e Placeholder.
+    Ritorna lista di tuple: (Area, Blob)
+    """
+    images_found = []
     for shape in shapes:
+        # Caso 1: Immagine diretta
         if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-            area = shape.width * shape.height
-            images_found.append((area, shape.image.blob))
+            try:
+                area = shape.width * shape.height
+                images_found.append((area, shape.image.blob))
+            except: pass
+            
+        # Caso 2: Gruppi (Entra dentro ricorsivamente)
         elif shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-            for s in shape.shapes:
-                if s.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                    area = s.width * s.height
-                    images_found.append((area, s.image.blob))
+            images_found.extend(get_images_recursive(shape.shapes))
+            
+        # Caso 3: Placeholder Immagine (A volte contengono l'immagine come riempimento)
+        elif shape.shape_type == MSO_SHAPE_TYPE.PLACEHOLDER:
+            if hasattr(shape, "image"):
+                try:
+                    area = shape.width * shape.height
+                    images_found.append((area, shape.image.blob))
+                except: pass
+                
     return images_found
 
 def analyze_pptx_content(file_obj):
     """
-    Estrae testo (slide + note) e immagini (Torneo Globale).
+    Estrae testo (slide + note) e immagini (Torneo Globale Avanzato).
     """
     prs = Presentation(file_obj)
     full_text = []
@@ -147,15 +161,20 @@ def analyze_pptx_content(file_obj):
         
         full_text.append(f"SLIDE {i+1} CONTENUTO: {visible_text} {notes_text}")
 
-        # 3. IMMAGINI (Torneo Globale)
+        # 3. IMMAGINI (Torneo Globale Avanzato)
         candidates = []
-        candidates.extend(get_all_images_from_shapes(slide.shapes))
+        
+        # Livello Slide
+        candidates.extend(get_images_recursive(slide.shapes))
+        # Livello Layout
         if slide.slide_layout:
-            candidates.extend(get_all_images_from_shapes(slide.slide_layout.shapes))
+            candidates.extend(get_images_recursive(slide.slide_layout.shapes))
+        # Livello Master
         if slide.slide_layout and slide.slide_layout.slide_master:
-            candidates.extend(get_all_images_from_shapes(slide.slide_layout.slide_master.shapes))
+            candidates.extend(get_images_recursive(slide.slide_layout.slide_master.shapes))
         
         if candidates:
+            # Ordina per Area decrescente (la più grande vince)
             candidates.sort(key=lambda x: x[0], reverse=True)
             extracted_images[i] = candidates[0][1]
     
@@ -167,16 +186,17 @@ def brain_process(text, model_name, style_choice):
     elif "Illustrazione 3D" in style_choice: style_instruction = "3D render, cute, clay style"
     elif "Cinematico" in style_choice: style_instruction = "Cinematic shot, dramatic lighting"
 
-    # PROMPT AGGIORNATO (CAMPO UNICO COSTI)
+    # PROMPT AGGIORNATO (SUBTITLE + COSTI UNICI)
     prompt = f"""
-    Sei un Event Manager che deve vendere un'attività di Team Building a un cliente.
-    Analizza il testo fornito (Slide + Note).
+    Sei un Event Manager che deve vendere un'attività di Team Building.
+    Analizza il testo fornito (Slide + Note) per estrarre i contenuti.
     
-    ⚠️ OBIETTIVO COPYWRITING:
-    - **Pag 2 (L'Azione):** Dinamica del gioco, energica e visiva.
-    - **Pag 3 (L'Emozione):** Atmosfera, divertimento, effetto WOW.
-    - **Pag 4 (Scheda Tecnica):** Dati tecnici precisi.
-    - **Pag 7 (Costi):** Estrai un blocco unico di testo che riassuma cosa è incluso ed escluso.
+    ⚠️ OBIETTIVI:
+    - **Cover:** Titolo e Sottotitolo (Slogan).
+    - **Pag 2 (Azione):** Dinamica del gioco, energica.
+    - **Pag 3 (Emozione):** Atmosfera, divertimento, effetto WOW.
+    - **Pag 4 (Tecnica):** Dati tecnici precisi.
+    - **Pag 7 (Costi):** Un testo UNICO e COERENTE che riassume cosa è compreso e cosa è escluso.
     
     ⚠️ REGOLE LINGUA:
     1. Testi in **ITALIANO**.
@@ -186,16 +206,17 @@ def brain_process(text, model_name, style_choice):
     {{
         "page_1_cover": {{ 
             "title": "Titolo del Format", 
-            "image_prompt": "Visual description in English" 
+            "subtitle": "Slogan o Sottotitolo accattivante",
+            "image_prompt": "Visual description in English for Cover" 
         }},
         "page_2_desc": {{ 
             "title": "Titolo d'impatto", 
-            "body": "Descrizione dinamica (ca. 60-70 parole).", 
+            "body": "Descrizione dinamica dell'attività (ca. 60-70 parole).", 
             "image_prompt": "Visual description in English" 
         }},
         "page_3_desc": {{ 
             "title": "Titolo emozionale", 
-            "body": "Descrizione atmosfera (ca. 60-70 parole).", 
+            "body": "Descrizione dell'atmosfera e coinvolgimento (ca. 60-70 parole).", 
             "image_prompt": "Visual description in English" 
         }},
         "page_4_details": {{
@@ -204,7 +225,7 @@ def brain_process(text, model_name, style_choice):
             "tecnica": "Audio, video, materiali."
         }},
         "page_7_costi": {{
-            "dettaglio": "Testo completo che elenca cosa include e cosa esclude la quotazione."
+            "dettaglio": "Testo completo: Il costo include... Il costo non comprende..."
         }}
     }}
     Style: {style_instruction}.
@@ -321,6 +342,7 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map, tra
         # Page 1: Cover
         if 'page_1_cover' in final_data:
             reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': final_data['page_1_cover'].get('title', '')}})
+            reqs.append({'replaceAllText': {'containsText': {'text': '{{SUBTITLE}}'}, 'replaceText': final_data['page_1_cover'].get('subtitle', '')}})
         # Page 2: Desc 1
         if 'page_2_desc' in final_data:
             reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE_1}}'}, 'replaceText': final_data['page_2_desc'].get('title', '')}})
@@ -436,7 +458,9 @@ elif st.session_state.app_state == "EDIT":
             with c1:
                 st.markdown("#### Testo Cover")
                 new_t = st.text_input("Titolo Format", value=data['page_1_cover'].get('title', ''), key=f"t1_{fname}")
+                new_s = st.text_input("Sottotitolo", value=data['page_1_cover'].get('subtitle', ''), key=f"s1_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_1_cover']['title'] = new_t
+                st.session_state.draft_data[fname]['ai_data']['page_1_cover']['subtitle'] = new_s
             with c2:
                 st.markdown("#### AI Image")
                 p = st.text_area("Prompt", value=data['page_1_cover'].get('image_prompt', ''), height=70, key=f"p1_{fname}")
@@ -516,11 +540,9 @@ elif st.session_state.app_state == "EDIT":
 
         # --- TAB 5: COSTI (UNICO CAMPO) ---
         with tabs[4]:
-            st.markdown("#### 💰 Dettagli Economici")
-            # Unica Text Area grande
+            st.markdown("#### 💰 Dettagli Economici (Slide 7)")
             det = st.text_area("Dettaglio Costi (Include/Esclude)", value=data.get('page_7_costi', {}).get('dettaglio', ''), height=300, key=f"c_det_{fname}")
             
-            # Init sicuro
             if 'page_7_costi' not in st.session_state.draft_data[fname]['ai_data']:
                 st.session_state.draft_data[fname]['ai_data']['page_7_costi'] = {}
             st.session_state.draft_data[fname]['ai_data']['page_7_costi']['dettaglio'] = det
