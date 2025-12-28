@@ -12,7 +12,6 @@ import os
 import time
 import uuid
 import io
-import copy
 
 # --- CONFIGURAZIONE ---
 st.set_page_config(page_title="Slide Monster: GOD MODE", page_icon="⚡", layout="wide")
@@ -74,7 +73,6 @@ with st.sidebar:
     with st.expander("⚙️ Configurazione Drive", expanded=True):
         tmpl = st.text_input("ID Template PPT", value=DEF_TEMPLATE_ID)
         fold = st.text_input("ID Cartella Output", value=DEF_FOLDER_ID)
-        # NUOVA OPZIONE
         make_english = st.checkbox("🇬🇧 Genera anche versione Inglese", value=True)
 
     st.divider()
@@ -108,12 +106,18 @@ with st.sidebar:
 # --- FUNZIONI CORE ---
 
 def get_all_images_from_shapes(shapes):
-    """Raccoglie tutte le immagini e le loro dimensioni"""
+    """
+    Raccoglie TUTTE le immagini da un set di forme e calcola la loro Area.
+    Restituisce una lista di tuple: (Area, BlobImmagine)
+    """
     images_found = [] 
     for shape in shapes:
+        # Caso 1: Immagine diretta
         if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
             area = shape.width * shape.height
             images_found.append((area, shape.image.blob))
+        
+        # Caso 2: Gruppo di immagini (spesso i loghi complessi sono gruppi, ma anche i layout)
         elif shape.shape_type == MSO_SHAPE_TYPE.GROUP:
             for s in shape.shapes:
                 if s.shape_type == MSO_SHAPE_TYPE.PICTURE:
@@ -122,7 +126,11 @@ def get_all_images_from_shapes(shapes):
     return images_found
 
 def analyze_pptx_content(file_obj):
-    """Estrae testo e immagini con Logica 'Torneo Globale'"""
+    """
+    Estrae testo e immagini.
+    LOGICA CORRETTA: 'Global Tournament'.
+    Raccoglie le immagini da Slide, Layout e Master INSIEME e sceglie la più grande.
+    """
     prs = Presentation(file_obj)
     full_text = []
     extracted_images = {} 
@@ -134,16 +142,25 @@ def analyze_pptx_content(file_obj):
                 s_txt.append(shape.text.strip())
         full_text.append(" | ".join(s_txt))
 
-        # Torneo Immagini
+        # --- TORNEO GLOBALE IMMAGINI ---
         candidates = []
+        
+        # 1. Raccogli dalla Slide (spesso c'è il logo qui)
         candidates.extend(get_all_images_from_shapes(slide.shapes))
+        
+        # 2. Raccogli dal Layout (modello intermedio)
         if slide.slide_layout:
             candidates.extend(get_all_images_from_shapes(slide.slide_layout.shapes))
+            
+        # 3. Raccogli dal Master (qui c'è lo sfondo gigante)
         if slide.slide_layout and slide.slide_layout.slide_master:
             candidates.extend(get_all_images_from_shapes(slide.slide_layout.slide_master.shapes))
         
+        # 4. SCEGLI IL VINCITORE
         if candidates:
+            # Ordina per Area decrescente (la più grande va all'indice 0)
             candidates.sort(key=lambda x: x[0], reverse=True)
+            # Salviamo il blob dell'immagine più grande
             extracted_images[i] = candidates[0][1]
     
     return "\n---\n".join(full_text), extracted_images
@@ -183,28 +200,28 @@ def brain_process(text, model_name, style_choice):
         st.error(f"Errore Gemini: {e}")
         return None
 
-# --- NUOVE FUNZIONI DI TRADUZIONE ---
+# --- FUNZIONI DI TRADUZIONE BASE ---
 
 def translate_struct_to_english(ai_data):
-    """Traduce la struttura dati (Titoli/Body) dall'Italiano all'Inglese"""
+    """Traduce la struttura dati in Inglese (chiavi e prompt esclusi)"""
     prompt = """
     You are a professional translator. Translate the values in the following JSON from Italian to English.
     Do NOT translate the keys. Do NOT translate 'image_prompt'.
     Return ONLY the valid JSON.
     """
-    model = genai.GenerativeModel("models/gemini-1.5-pro") # Usiamo 1.5 Pro per traduzioni affidabili
+    model = genai.GenerativeModel("models/gemini-1.5-pro") 
     try:
         resp = model.generate_content(f"{prompt}\n\nJSON:\n{json.dumps(ai_data)}", generation_config={"response_mime_type": "application/json"})
         return json.loads(resp.text)
     except Exception as e:
         print(f"Errore Traduzione Struct: {e}")
-        return ai_data # Fallback: ritorna originale
+        return ai_data
 
 def get_template_static_text(presentation_id):
-    """Estrae tutto il testo statico dalla presentazione (che non è un placeholder {{}})."""
+    """Estrae testo statico dalla presentazione"""
     try:
         prs = slides_service.presentations().get(presentationId=presentation_id).execute()
-        texts_to_translate = set() # Set per evitare duplicati
+        texts_to_translate = set()
         
         for slide in prs.get('slides', []):
             for el in slide.get('pageElements', []):
@@ -212,7 +229,6 @@ def get_template_static_text(presentation_id):
                     for tr in el['shape']['text']['textElements']:
                         if 'textRun' in tr and 'content' in tr['textRun']:
                             content = tr['textRun']['content'].strip()
-                            # Filtriamo: deve avere testo, non deve essere un placeholder {{...}}
                             if content and "{{" not in content and "}}" not in content and len(content) > 2:
                                 texts_to_translate.add(content)
         return list(texts_to_translate)
@@ -221,18 +237,15 @@ def get_template_static_text(presentation_id):
         return []
 
 def translate_list_strings(text_list):
-    """Traduce una lista di stringhe in una chiamata sola"""
+    """Traduce una lista di stringhe"""
     if not text_list: return {}
     
     prompt = """
-    You are a professional translator for corporate presentations.
-    Translate the following list of Italian strings into English.
-    Maintain tone and style.
+    You are a professional translator. Translate the following list of Italian strings into English.
     Output a JSON object where keys are the original Italian strings and values are the English translations.
     """
     model = genai.GenerativeModel("models/gemini-1.5-pro")
     try:
-        # Batchiamo se la lista è troppo lunga, ma per ora proviamo diretta
         resp = model.generate_content(f"{prompt}\n\nLIST:\n{json.dumps(text_list)}", generation_config={"response_mime_type": "application/json"})
         return json.loads(resp.text)
     except Exception as e:
@@ -240,7 +253,6 @@ def translate_list_strings(text_list):
         return {}
 
 def apply_static_translations(presentation_id, translation_map):
-    """Sostituisce il testo statico nel PPT"""
     if not translation_map: return
     reqs = []
     for it_text, en_text in translation_map.items():
@@ -252,7 +264,6 @@ def apply_static_translations(presentation_id, translation_map):
                 }
             })
     if reqs:
-        # Google ha un limite di richieste per batch, spezziamo se necessario
         chunk_size = 50
         for i in range(0, len(reqs), chunk_size):
             chunk = reqs[i:i + chunk_size]
@@ -303,36 +314,23 @@ def find_image_element_id_smart(prs_id, label):
     return None
 
 def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map, translate_mode=False):
-    """
-    Funzione Worker Unificata.
-    Se translate_mode=True:
-    1. Traduce ai_data in Inglese.
-    2. Copia il template.
-    3. Estrae e traduce tutto il testo statico (slide fisse).
-    4. Applica i dati tradotti ai placeholder.
-    """
     try:
-        # 1. Copia File
         copy = drive_service.files().copy(
             fileId=template_id, body={'name': filename, 'parents': [folder_id]}, supportsAllDrives=True
         ).execute()
         new_id = copy.get('id')
         
-        # LOGICA TRADUZIONE INGLESE
         final_data = ai_data
         if translate_mode:
-            # A. Traduci i dati dinamici (quelli dell'editor)
-            st.toast(f"🇬🇧 Traduzione contenuti dinamici: {filename}")
+            st.toast(f"🇬🇧 Traduzione dinamica: {filename}")
             final_data = translate_struct_to_english(ai_data)
             
-            # B. Traduci i dati statici (template, slide fisse)
-            st.toast(f"🇬🇧 Traduzione slide fisse e template: {filename}")
+            st.toast(f"🇬🇧 Traduzione statica: {filename}")
             static_texts = get_template_static_text(new_id)
             if static_texts:
                 translation_map = translate_list_strings(static_texts)
                 apply_static_translations(new_id, translation_map)
         
-        # 2. Sostituzione Placeholder (con dati ITA o ENG)
         reqs = []
         if 'cover' in final_data:
             reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': final_data['cover'].get('title', '')}})
@@ -347,7 +345,6 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map, tra
         if reqs:
             slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
 
-        # 3. Sostituzione Immagini
         for label, url in urls_map.items():
             if url:
                 el_id = find_image_element_id_smart(new_id, label)
@@ -398,7 +395,7 @@ if st.session_state.app_state == "UPLOAD":
                     st.session_state.app_state = "EDIT"
                     st.rerun()
         with col_act2:
-            st.caption("Analisi intelligente: Gemini 3 Pro + Estrazione Immagini HD.")
+            st.caption("Analisi intelligente: Gemini 3 Pro + Estrazione Immagini HD (Slide/Layout/Master).")
 
 # --- FASE 2: EDITING ---
 elif st.session_state.app_state == "EDIT":
@@ -412,18 +409,17 @@ elif st.session_state.app_state == "EDIT":
             total_ops = len(st.session_state.draft_data)
             
             for i, (fname, content) in enumerate(st.session_state.draft_data.items()):
-                # Prepare URL map
                 url_map = {}
                 saved = st.session_state.final_images.get(fname, {})
                 if 'cover' in saved: url_map['IMG_COVER'] = saved['cover']
                 for k, v in saved.items():
                     if k.startswith("slide_"): url_map[f"IMG_{k.split('_')[1]}"] = v
                 
-                # 1. VERSIONE ITALIANA
+                # 1. ITA
                 st.toast(f"🇮🇹 Creazione ITA: {fname}")
                 res_ita = worker_bot_finalize(tmpl, fold, fname, content['ai_data'], url_map, translate_mode=False)
                 
-                # 2. VERSIONE INGLESE (Se attiva)
+                # 2. ENG (Se attivo)
                 if make_english:
                     fname_eng = fname.replace("_ITA", "_ENG")
                     st.toast(f"🇬🇧 Creazione ENG: {fname_eng}")
@@ -475,12 +471,12 @@ elif st.session_state.app_state == "EDIT":
                 st.markdown("#### 🖼️ Originale PPT")
                 orig_bytes = orig_imgs.get(0)
                 if orig_bytes:
-                    st.image(orig_bytes, caption="Estratta dal PPT", use_container_width=True)
+                    st.image(orig_bytes, caption="Estratta dal PPT (la più grande)", use_container_width=True)
                     if st.button("Usa questa Originale", key=f"b_orig_c_{fname}", use_container_width=True):
                         url = upload_bytes_to_bucket(orig_bytes)
                         st.session_state.final_images[fname]['cover'] = url
                         st.rerun()
-                else: st.warning("Nessuna immagine trovata.")
+                else: st.warning("Nessuna immagine trovata (Slide/Layout/Master).")
 
         # TAB SLIDES
         if 'slides' in data:
