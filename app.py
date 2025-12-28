@@ -167,44 +167,44 @@ def brain_process(text, model_name, style_choice):
     elif "Illustrazione 3D" in style_choice: style_instruction = "3D render, cute, clay style"
     elif "Cinematico" in style_choice: style_instruction = "Cinematic shot, dramatic lighting"
 
-    # PROMPT "SALES & EMOTION"
+    # PROMPT AGGIORNATO (CAMPO UNICO COSTI)
     prompt = f"""
     Sei un Event Manager che deve vendere un'attività di Team Building a un cliente.
     Analizza il testo fornito (Slide + Note).
     
     ⚠️ OBIETTIVO COPYWRITING:
-    Il cliente vuole sapere se si divertiranno e se l'evento sarà memorabile. 
-    NON essere accademico. NON parlare troppo di formazione (c'è una slide apposta dopo).
+    - **Pag 2 (L'Azione):** Dinamica del gioco, energica e visiva.
+    - **Pag 3 (L'Emozione):** Atmosfera, divertimento, effetto WOW.
+    - **Pag 4 (Scheda Tecnica):** Dati tecnici precisi.
+    - **Pag 7 (Costi):** Estrai un blocco unico di testo che riassuma cosa è incluso ed escluso.
     
-    - **Pagina 2 (L'Azione):** Descrivi la dinamica del gioco. Cosa fanno concretamente? C'è competizione? C'è creatività? Usa un linguaggio energico, visivo e coinvolgente.
-    - **Pagina 3 (L'Emozione):** Descrivi l'atmosfera. Il senso di squadra, l'energia, il divertimento condiviso, l'effetto WOW finale. Solo un accenno veloce al valore formativo (es. "un modo divertente per stare insieme").
-    - **Pagina 4 (Scheda Tecnica):** Sii estremamente schematico e tecnico.
-
     ⚠️ REGOLE LINGUA:
-    1. Testi in **ITALIANO** (Tono "Corporate Fun", professionale ma non noioso).
+    1. Testi in **ITALIANO**.
     2. Prompt Immagini in **INGLESE**.
-    3. Segui le NOTE se presenti.
     
     STRUTTURA RICHIESTA (JSON):
     {{
         "page_1_cover": {{ 
             "title": "Titolo del Format", 
-            "image_prompt": "Visual description in English for Cover" 
+            "image_prompt": "Visual description in English" 
         }},
         "page_2_desc": {{ 
-            "title": "Titolo d'impatto (es. Ingegneria Creativa)", 
-            "body": "Descrizione dinamica dell'attività (ca. 60-70 parole). Focus sull'azione.", 
+            "title": "Titolo d'impatto", 
+            "body": "Descrizione dinamica (ca. 60-70 parole).", 
             "image_prompt": "Visual description in English" 
         }},
         "page_3_desc": {{ 
-            "title": "Titolo emozionale (es. Energia Pura)", 
-            "body": "Descrizione dell'atmosfera e del coinvolgimento (ca. 60-70 parole). Focus sull'emozione.", 
+            "title": "Titolo emozionale", 
+            "body": "Descrizione atmosfera (ca. 60-70 parole).", 
             "image_prompt": "Visual description in English" 
         }},
         "page_4_details": {{
-            "svolgimento": "Fasi dell'attività (Brief, Costruzione, Test, Show Finale). Schematico.",
-            "logistica": "Spazi, tempi, numero pax, indoor/outdoor.",
-            "tecnica": "Audio, video, tavoli, prese elettriche."
+            "svolgimento": "Fasi dell'attività. Schematico.",
+            "logistica": "Spazi, tempi, numero pax.",
+            "tecnica": "Audio, video, materiali."
+        }},
+        "page_7_costi": {{
+            "dettaglio": "Testo completo che elenca cosa include e cosa esclude la quotazione."
         }}
     }}
     Style: {style_instruction}.
@@ -223,7 +223,7 @@ def translate_struct_to_english(ai_data):
     You are a professional copywriter. Translate the values in the following JSON from Italian to English.
     Do NOT translate the keys. Do NOT translate 'image_prompt'.
     Keep proper names (Format Names) intact.
-    Make the English text punchy, persuasive and exciting.
+    Make the English text punchy and professional.
     Return ONLY the valid JSON.
     """
     model = genai.GenerativeModel("models/gemini-1.5-pro") 
@@ -334,6 +334,9 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map, tra
             reqs.append({'replaceAllText': {'containsText': {'text': '{{SVOLGIMENTO}}'}, 'replaceText': final_data['page_4_details'].get('svolgimento', '')}})
             reqs.append({'replaceAllText': {'containsText': {'text': '{{LOGISTICA}}'}, 'replaceText': final_data['page_4_details'].get('logistica', '')}})
             reqs.append({'replaceAllText': {'containsText': {'text': '{{TECNICA}}'}, 'replaceText': final_data['page_4_details'].get('tecnica', '')}})
+        # Page 7: Costi (CAMPO UNICO)
+        if 'page_7_costi' in final_data:
+            reqs.append({'replaceAllText': {'containsText': {'text': '{{DETTAGLIO_COSTO}}'}, 'replaceText': final_data['page_7_costi'].get('dettaglio', '')}})
 
         if reqs:
             slides_service.presentations().batchUpdate(presentationId=new_id, body={'requests': reqs}).execute()
@@ -382,14 +385,14 @@ if st.session_state.app_state == "UPLOAD":
                     st.session_state.app_state = "EDIT"
                     st.rerun()
         with col_act2:
-            st.caption("Analisi Emozionale: testi brevi e coinvolgenti per le prime slide, dettagli tecnici precisi per la quarta.")
+            st.caption("Analisi Emozionale + Estrazione Tecnica Costi (Pagina 7 Unificata).")
 
 # --- FASE 2: EDITING ---
 elif st.session_state.app_state == "EDIT":
     
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
-        st.info("✏️ **Sala di Regia**: Controlla i testi (Tono 'Sales').")
+        st.info("✏️ **Sala di Regia**: Controlla Testi, Immagini e la nuova sezione Costi.")
     with col_h2:
         if st.button("💾 SALVA SU DRIVE", type="primary", use_container_width=True):
             bar = st.progress(0)
@@ -398,13 +401,15 @@ elif st.session_state.app_state == "EDIT":
                 url_map = {}
                 saved = st.session_state.final_images.get(fname, {})
                 
+                # MAPPING IMMAGINI
                 if 'cover' in saved: url_map['IMG_1'] = saved['cover'] 
                 if 'desc_1' in saved: url_map['IMG_2'] = saved['desc_1'] 
                 if 'desc_2' in saved: url_map['IMG_3'] = saved['desc_2'] 
                 
+                # ITA
                 st.toast(f"🇮🇹 Saving ITA: {fname}")
                 res_ita = worker_bot_finalize(tmpl, fold, fname, content['ai_data'], url_map, translate_mode=False)
-                
+                # ENG
                 if make_english:
                     fname_eng = fname.replace("_ITA", "_ENG")
                     st.toast(f"🇬🇧 Saving ENG: {fname_eng}")
@@ -422,7 +427,8 @@ elif st.session_state.app_state == "EDIT":
         
         st.markdown(f"## 📂 {fname}")
         
-        tabs = st.tabs(["🏠 1. Cover", "📄 2. L'Esperienza", "📄 3. L'Emozione", "🛠️ 4. Scheda Tecnica"])
+        # AGGIUNTO IL TAB COSTI
+        tabs = st.tabs(["🏠 1. Cover", "📄 2. L'Esperienza", "📄 3. L'Emozione", "🛠️ 4. Scheda Tecnica", "💰 7. Costi"])
         
         # --- TAB 1: COVER ---
         with tabs[0]:
@@ -449,7 +455,7 @@ elif st.session_state.app_state == "EDIT":
         with tabs[1]:
             c1, c2, c3 = st.columns([1.5, 1, 1])
             with c1:
-                st.markdown("#### Cosa facciamo (Azione)")
+                st.markdown("#### Cosa facciamo")
                 new_t = st.text_input("Titolo 1", value=data['page_2_desc'].get('title', ''), key=f"t2_{fname}")
                 new_b = st.text_area("Body 1", value=data['page_2_desc'].get('body', ''), height=150, key=f"b2_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_2_desc']['title'] = new_t
@@ -472,7 +478,7 @@ elif st.session_state.app_state == "EDIT":
         with tabs[2]:
             c1, c2, c3 = st.columns([1.5, 1, 1])
             with c1:
-                st.markdown("#### L'Atmosfera (Emozione)")
+                st.markdown("#### L'Atmosfera")
                 new_t = st.text_input("Titolo 2", value=data['page_3_desc'].get('title', ''), key=f"t3_{fname}")
                 new_b = st.text_area("Body 2", value=data['page_3_desc'].get('body', ''), height=150, key=f"b3_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_3_desc']['title'] = new_t
@@ -507,5 +513,16 @@ elif st.session_state.app_state == "EDIT":
                 st.markdown("**Tecnica**")
                 v3 = st.text_area("Testo", value=data['page_4_details'].get('tecnica', ''), height=250, key=f"d3_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_4_details']['tecnica'] = v3
+
+        # --- TAB 5: COSTI (UNICO CAMPO) ---
+        with tabs[4]:
+            st.markdown("#### 💰 Dettagli Economici")
+            # Unica Text Area grande
+            det = st.text_area("Dettaglio Costi (Include/Esclude)", value=data.get('page_7_costi', {}).get('dettaglio', ''), height=300, key=f"c_det_{fname}")
+            
+            # Init sicuro
+            if 'page_7_costi' not in st.session_state.draft_data[fname]['ai_data']:
+                st.session_state.draft_data[fname]['ai_data']['page_7_costi'] = {}
+            st.session_state.draft_data[fname]['ai_data']['page_7_costi']['dettaglio'] = det
 
         st.markdown("---")
