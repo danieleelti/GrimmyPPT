@@ -167,13 +167,21 @@ def brain_process(text, model_name, style_choice):
     elif "Illustrazione 3D" in style_choice: style_instruction = "3D render, cute, clay style"
     elif "Cinematico" in style_choice: style_instruction = "Cinematic shot, dramatic lighting"
 
-    # PROMPT SPECIFICO PER LA NUOVA STRUTTURA
+    # PROMPT "SALES & EMOTION"
     prompt = f"""
-    Sei un Creative Director esperto in Team Building.
-    Analizza il testo fornito (Slide + Note) ed estrai i contenuti per riempire il nuovo layout a 4 Pagine Dinamiche.
+    Sei un Event Manager che deve vendere un'attività di Team Building a un cliente.
+    Analizza il testo fornito (Slide + Note).
     
+    ⚠️ OBIETTIVO COPYWRITING:
+    Il cliente vuole sapere se si divertiranno e se l'evento sarà memorabile. 
+    NON essere accademico. NON parlare troppo di formazione (c'è una slide apposta dopo).
+    
+    - **Pagina 2 (L'Azione):** Descrivi la dinamica del gioco. Cosa fanno concretamente? C'è competizione? C'è creatività? Usa un linguaggio energico, visivo e coinvolgente.
+    - **Pagina 3 (L'Emozione):** Descrivi l'atmosfera. Il senso di squadra, l'energia, il divertimento condiviso, l'effetto WOW finale. Solo un accenno veloce al valore formativo (es. "un modo divertente per stare insieme").
+    - **Pagina 4 (Scheda Tecnica):** Sii estremamente schematico e tecnico.
+
     ⚠️ REGOLE LINGUA:
-    1. Testi in **ITALIANO**.
+    1. Testi in **ITALIANO** (Tono "Corporate Fun", professionale ma non noioso).
     2. Prompt Immagini in **INGLESE**.
     3. Segui le NOTE se presenti.
     
@@ -184,19 +192,19 @@ def brain_process(text, model_name, style_choice):
             "image_prompt": "Visual description in English for Cover" 
         }},
         "page_2_desc": {{ 
-            "title": "Titolo introduttivo (es. Il Concept)", 
-            "body": "Descrizione estesa parte 1 (circa 60 parole)", 
+            "title": "Titolo d'impatto (es. Ingegneria Creativa)", 
+            "body": "Descrizione dinamica dell'attività (ca. 60-70 parole). Focus sull'azione.", 
             "image_prompt": "Visual description in English" 
         }},
         "page_3_desc": {{ 
-            "title": "Titolo approfondimento (es. La Missione)", 
-            "body": "Descrizione estesa parte 2 (circa 60 parole)", 
+            "title": "Titolo emozionale (es. Energia Pura)", 
+            "body": "Descrizione dell'atmosfera e del coinvolgimento (ca. 60-70 parole). Focus sull'emozione.", 
             "image_prompt": "Visual description in English" 
         }},
         "page_4_details": {{
-            "svolgimento": "Descrivi come si svolge l'attività (fasi, dinamiche). Sii schematico.",
-            "logistica": "Dettagli logistici (spazi, tempi, partecipanti, indoor/outdoor).",
-            "tecnica": "Esigenze tecniche (audio, video, prese elettriche, materiali)."
+            "svolgimento": "Fasi dell'attività (Brief, Costruzione, Test, Show Finale). Schematico.",
+            "logistica": "Spazi, tempi, numero pax, indoor/outdoor.",
+            "tecnica": "Audio, video, tavoli, prese elettriche."
         }}
     }}
     Style: {style_instruction}.
@@ -212,9 +220,10 @@ def brain_process(text, model_name, style_choice):
 def translate_struct_to_english(ai_data):
     """Traduce i valori del JSON in Inglese"""
     prompt = """
-    You are a professional translator. Translate the values in the following JSON from Italian to English.
+    You are a professional copywriter. Translate the values in the following JSON from Italian to English.
     Do NOT translate the keys. Do NOT translate 'image_prompt'.
     Keep proper names (Format Names) intact.
+    Make the English text punchy, persuasive and exciting.
     Return ONLY the valid JSON.
     """
     model = genai.GenerativeModel("models/gemini-1.5-pro") 
@@ -373,14 +382,14 @@ if st.session_state.app_state == "UPLOAD":
                     st.session_state.app_state = "EDIT"
                     st.rerun()
         with col_act2:
-            st.caption("Analisi ottimizzata per il nuovo layout a 4 Pagine Dinamiche (Cover, Desc 1, Desc 2, Dettagli).")
+            st.caption("Analisi Emozionale: testi brevi e coinvolgenti per le prime slide, dettagli tecnici precisi per la quarta.")
 
 # --- FASE 2: EDITING ---
 elif st.session_state.app_state == "EDIT":
     
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
-        st.info("✏️ **Sala di Regia**: Struttura a 4 Tab fissi. Compila i campi e salva.")
+        st.info("✏️ **Sala di Regia**: Controlla i testi (Tono 'Sales').")
     with col_h2:
         if st.button("💾 SALVA SU DRIVE", type="primary", use_container_width=True):
             bar = st.progress(0)
@@ -389,15 +398,13 @@ elif st.session_state.app_state == "EDIT":
                 url_map = {}
                 saved = st.session_state.final_images.get(fname, {})
                 
-                # MAPPING IMMAGINI (Tag Template)
-                if 'cover' in saved: url_map['IMG_1'] = saved['cover'] # IMG_1 ora è la Cover (Pag 1)
-                if 'desc_1' in saved: url_map['IMG_2'] = saved['desc_1'] # IMG_2 è Pag 2
-                if 'desc_2' in saved: url_map['IMG_3'] = saved['desc_2'] # IMG_3 è Pag 3
+                if 'cover' in saved: url_map['IMG_1'] = saved['cover'] 
+                if 'desc_1' in saved: url_map['IMG_2'] = saved['desc_1'] 
+                if 'desc_2' in saved: url_map['IMG_3'] = saved['desc_2'] 
                 
-                # ITA
                 st.toast(f"🇮🇹 Saving ITA: {fname}")
                 res_ita = worker_bot_finalize(tmpl, fold, fname, content['ai_data'], url_map, translate_mode=False)
-                # ENG
+                
                 if make_english:
                     fname_eng = fname.replace("_ITA", "_ENG")
                     st.toast(f"🇬🇧 Saving ENG: {fname_eng}")
@@ -415,8 +422,7 @@ elif st.session_state.app_state == "EDIT":
         
         st.markdown(f"## 📂 {fname}")
         
-        # 4 TAB FISSI
-        tabs = st.tabs(["🏠 1. Cover", "📄 2. Descrizione 1", "📄 3. Descrizione 2", "🛠️ 4. Scheda Tecnica"])
+        tabs = st.tabs(["🏠 1. Cover", "📄 2. L'Esperienza", "📄 3. L'Emozione", "🛠️ 4. Scheda Tecnica"])
         
         # --- TAB 1: COVER ---
         with tabs[0]:
@@ -443,9 +449,9 @@ elif st.session_state.app_state == "EDIT":
         with tabs[1]:
             c1, c2, c3 = st.columns([1.5, 1, 1])
             with c1:
-                st.markdown("#### Testo Pagina 2")
+                st.markdown("#### Cosa facciamo (Azione)")
                 new_t = st.text_input("Titolo 1", value=data['page_2_desc'].get('title', ''), key=f"t2_{fname}")
-                new_b = st.text_area("Body 1", value=data['page_2_desc'].get('body', ''), height=100, key=f"b2_{fname}")
+                new_b = st.text_area("Body 1", value=data['page_2_desc'].get('body', ''), height=150, key=f"b2_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_2_desc']['title'] = new_t
                 st.session_state.draft_data[fname]['ai_data']['page_2_desc']['body'] = new_b
             with c2:
@@ -457,7 +463,6 @@ elif st.session_state.app_state == "EDIT":
                 if st.session_state.final_images[fname].get('desc_1'): st.success("Pronta")
             with c3:
                 st.markdown("#### Originale")
-                # Indice 1 (Slide 2)
                 if orig_imgs.get(1):
                     st.image(orig_imgs[1], width=150)
                     if st.button("Usa Originale", key=f"bo2_{fname}"):
@@ -467,9 +472,9 @@ elif st.session_state.app_state == "EDIT":
         with tabs[2]:
             c1, c2, c3 = st.columns([1.5, 1, 1])
             with c1:
-                st.markdown("#### Testo Pagina 3")
+                st.markdown("#### L'Atmosfera (Emozione)")
                 new_t = st.text_input("Titolo 2", value=data['page_3_desc'].get('title', ''), key=f"t3_{fname}")
-                new_b = st.text_area("Body 2", value=data['page_3_desc'].get('body', ''), height=100, key=f"b3_{fname}")
+                new_b = st.text_area("Body 2", value=data['page_3_desc'].get('body', ''), height=150, key=f"b3_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_3_desc']['title'] = new_t
                 st.session_state.draft_data[fname]['ai_data']['page_3_desc']['body'] = new_b
             with c2:
@@ -481,7 +486,6 @@ elif st.session_state.app_state == "EDIT":
                 if st.session_state.final_images[fname].get('desc_2'): st.success("Pronta")
             with c3:
                 st.markdown("#### Originale")
-                # Indice 2 (Slide 3)
                 if orig_imgs.get(2):
                     st.image(orig_imgs[2], width=150)
                     if st.button("Usa Originale", key=f"bo3_{fname}"):
@@ -489,19 +493,19 @@ elif st.session_state.app_state == "EDIT":
 
         # --- TAB 4: DETAILS ---
         with tabs[3]:
-            st.markdown("#### 🛠️ Dettagli Tecnici (Slide 4 - 3 Colonne)")
+            st.markdown("#### 🛠️ Dettagli Tecnici")
             c1, c2, c3 = st.columns(3)
             with c1:
                 st.markdown("**Svolgimento**")
-                v1 = st.text_area("Testo", value=data['page_4_details'].get('svolgimento', ''), height=200, key=f"d1_{fname}")
+                v1 = st.text_area("Testo", value=data['page_4_details'].get('svolgimento', ''), height=250, key=f"d1_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_4_details']['svolgimento'] = v1
             with c2:
                 st.markdown("**Logistica**")
-                v2 = st.text_area("Testo", value=data['page_4_details'].get('logistica', ''), height=200, key=f"d2_{fname}")
+                v2 = st.text_area("Testo", value=data['page_4_details'].get('logistica', ''), height=250, key=f"d2_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_4_details']['logistica'] = v2
             with c3:
                 st.markdown("**Tecnica**")
-                v3 = st.text_area("Testo", value=data['page_4_details'].get('tecnica', ''), height=200, key=f"d3_{fname}")
+                v3 = st.text_area("Testo", value=data['page_4_details'].get('tecnica', ''), height=250, key=f"d3_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_4_details']['tecnica'] = v3
 
         st.markdown("---")
