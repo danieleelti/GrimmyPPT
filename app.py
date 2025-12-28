@@ -106,18 +106,12 @@ with st.sidebar:
 # --- FUNZIONI CORE ---
 
 def get_all_images_from_shapes(shapes):
-    """
-    Raccoglie TUTTE le immagini da un set di forme e calcola la loro Area.
-    Restituisce una lista di tuple: (Area, BlobImmagine)
-    """
+    """Raccoglie tutte le immagini e le loro dimensioni"""
     images_found = [] 
     for shape in shapes:
-        # Caso 1: Immagine diretta
         if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
             area = shape.width * shape.height
             images_found.append((area, shape.image.blob))
-        
-        # Caso 2: Gruppo di immagini (spesso i loghi complessi sono gruppi, ma anche i layout)
         elif shape.shape_type == MSO_SHAPE_TYPE.GROUP:
             for s in shape.shapes:
                 if s.shape_type == MSO_SHAPE_TYPE.PICTURE:
@@ -127,40 +121,47 @@ def get_all_images_from_shapes(shapes):
 
 def analyze_pptx_content(file_obj):
     """
-    Estrae testo e immagini.
-    LOGICA CORRETTA: 'Global Tournament'.
-    Raccoglie le immagini da Slide, Layout e Master INSIEME e sceglie la più grande.
+    Estrae testo VISIBILE e NOTE DEL RELATORE.
+    Estrae immagini con logica Torneo Globale.
     """
     prs = Presentation(file_obj)
     full_text = []
     extracted_images = {} 
 
     for i, slide in enumerate(prs.slides):
+        # 1. TESTO VISIBILE
         s_txt = []
         for shape in slide.shapes:
             if hasattr(shape, "text") and shape.text.strip():
                 s_txt.append(shape.text.strip())
-        full_text.append(" | ".join(s_txt))
+        
+        visible_text = " | ".join(s_txt)
 
-        # --- TORNEO GLOBALE IMMAGINI ---
+        # 2. NOTE DEL RELATORE (Nuova Funzione!)
+        notes_text = ""
+        if slide.has_notes_slide:
+            try:
+                notes_slide = slide.notes_slide
+                if notes_slide.notes_text_frame:
+                    notes_content = notes_slide.notes_text_frame.text.strip()
+                    if notes_content:
+                        notes_text = f"\n[[ ISTRUZIONI DALLE NOTE: {notes_content} ]]"
+            except:
+                pass # Se fallisce l'estrazione note, ignora
+        
+        # Uniamo tutto nel pacchetto per Gemini
+        full_text.append(f"SLIDE {i+1} CONTENUTO: {visible_text} {notes_text}")
+
+        # 3. IMMAGINI (Torneo Globale)
         candidates = []
-        
-        # 1. Raccogli dalla Slide (spesso c'è il logo qui)
         candidates.extend(get_all_images_from_shapes(slide.shapes))
-        
-        # 2. Raccogli dal Layout (modello intermedio)
         if slide.slide_layout:
             candidates.extend(get_all_images_from_shapes(slide.slide_layout.shapes))
-            
-        # 3. Raccogli dal Master (qui c'è lo sfondo gigante)
         if slide.slide_layout and slide.slide_layout.slide_master:
             candidates.extend(get_all_images_from_shapes(slide.slide_layout.slide_master.shapes))
         
-        # 4. SCEGLI IL VINCITORE
         if candidates:
-            # Ordina per Area decrescente (la più grande va all'indice 0)
             candidates.sort(key=lambda x: x[0], reverse=True)
-            # Salviamo il blob dell'immagine più grande
             extracted_images[i] = candidates[0][1]
     
     return "\n---\n".join(full_text), extracted_images
@@ -171,23 +172,25 @@ def brain_process(text, model_name, style_choice):
     elif "Illustrazione 3D" in style_choice: style_instruction = "3D render, cute, clay style"
     elif "Cinematico" in style_choice: style_instruction = "Cinematic shot, dramatic lighting"
 
+    # PROMPT AGGIORNATO PER LE NOTE
     prompt = f"""
     Sei un Creative Director esperto.
-    Analizza il testo fornito e struttura una presentazione.
+    Analizza il testo fornito. Troverai sia il testo visibile che le "ISTRUZIONI DALLE NOTE".
     
-    ⚠️ REGOLE LINGUA:
-    1. Tutti i contenuti testuali (titoli, sottotitoli, body) devono essere in **ITALIANO**.
-    2. I prompt immagini ("image_prompt") in **INGLESE**.
+    ⚠️ REGOLE CRUCIALI:
+    1. **Usa le NOTE come fonte primaria di verità**: Se nelle note c'è scritto cosa dire o come strutturare la slide, segui quelle istruzioni alla lettera per generare il campo 'body'.
+    2. Lingua Testi: **ITALIANO**.
+    3. Lingua Prompt Immagini: **INGLESE**.
     
     OUTPUT RICHIESTO (JSON):
     {{
         "cover": {{ "title": "Titolo ITA", "subtitle": "Slogan ITA", "image_prompt": "Prompt ENG" }},
         "slides": [
-            {{ "id": 1, "title": "Titolo ITA", "body": "Testo ITA (max 30 parole)", "image_prompt": "Prompt ENG" }},
-            {{ "id": 2, "title": "Titolo ITA", "body": "Testo ITA", "image_prompt": "Prompt ENG" }},
-            {{ "id": 3, "title": "Titolo ITA", "body": "Testo ITA", "image_prompt": "Prompt ENG" }},
-            {{ "id": 4, "title": "Titolo ITA", "body": "Testo ITA", "image_prompt": "Prompt ENG" }},
-            {{ "id": 5, "title": "Titolo ITA", "body": "Testo ITA", "image_prompt": "Prompt ENG" }}
+            {{ "id": 1, "title": "Titolo ITA", "body": "Testo ITA basato sulle NOTE se presenti (max 30 parole)", "image_prompt": "Prompt ENG" }},
+            {{ "id": 2, "title": "Titolo ITA", "body": "Testo ITA basato sulle NOTE", "image_prompt": "Prompt ENG" }},
+            {{ "id": 3, "title": "Titolo ITA", "body": "Testo ITA basato sulle NOTE", "image_prompt": "Prompt ENG" }},
+            {{ "id": 4, "title": "Titolo ITA", "body": "Testo ITA basato sulle NOTE", "image_prompt": "Prompt ENG" }},
+            {{ "id": 5, "title": "Titolo ITA", "body": "Testo ITA basato sulle NOTE", "image_prompt": "Prompt ENG" }}
         ]
     }}
     Style: {style_instruction}.
@@ -199,8 +202,6 @@ def brain_process(text, model_name, style_choice):
     except Exception as e:
         st.error(f"Errore Gemini: {e}")
         return None
-
-# --- FUNZIONI DI TRADUZIONE BASE ---
 
 def translate_struct_to_english(ai_data):
     """Traduce la struttura dati in Inglese (chiavi e prompt esclusi)"""
@@ -395,14 +396,14 @@ if st.session_state.app_state == "UPLOAD":
                     st.session_state.app_state = "EDIT"
                     st.rerun()
         with col_act2:
-            st.caption("Analisi intelligente: Gemini 3 Pro + Estrazione Immagini HD (Slide/Layout/Master).")
+            st.caption("Analisi: Legge Slide, Master (Immagini) e **NOTE DEL RELATORE** per il testo.")
 
 # --- FASE 2: EDITING ---
 elif st.session_state.app_state == "EDIT":
     
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
-        st.info("✏️ **Sala di Regia**: Layout verticale. Modifica i testi (ITA), le versioni ENG saranno tradotte automaticamente al salvataggio.")
+        st.info("✏️ **Sala di Regia**: Controlla i testi (ITA). Se nelle Note del PPT originale c'erano istruzioni, sono state usate.")
     with col_h2:
         if st.button("💾 SALVA TUTTO SU DRIVE", type="primary", use_container_width=True):
             bar = st.progress(0)
@@ -476,7 +477,7 @@ elif st.session_state.app_state == "EDIT":
                         url = upload_bytes_to_bucket(orig_bytes)
                         st.session_state.final_images[fname]['cover'] = url
                         st.rerun()
-                else: st.warning("Nessuna immagine trovata (Slide/Layout/Master).")
+                else: st.warning("Nessuna immagine trovata.")
 
         # TAB SLIDES
         if 'slides' in data:
