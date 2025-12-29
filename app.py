@@ -14,7 +14,7 @@ import uuid
 import io
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Slide Monster: FORMAT MODE", page_icon="🏗️", layout="wide")
+st.set_page_config(page_title="Slide Monster: PRO COPYWRITER", page_icon="🦍", layout="wide")
 
 # ======================================================
 # ⚙️ RECUPERO DATI DA SECRETS
@@ -68,7 +68,7 @@ except Exception as e:
 # SIDEBAR
 # ==========================================
 with st.sidebar:
-    st.header("🏗️ Slide Monster")
+    st.header("🦍 Slide Monster PRO")
     
     with st.expander("⚙️ Configurazione Drive", expanded=True):
         tmpl = st.text_input("ID Template PPT", value=DEF_TEMPLATE_ID)
@@ -77,24 +77,11 @@ with st.sidebar:
 
     st.divider()
 
-    st.subheader("🧠 Cervello")
-    try:
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-    except: available_models = []
-    
+    st.subheader("🧠 Motore AI")
+    # MODELLO UNICO E DEFINITIVO
     target_model = "models/gemini-3-pro-preview" 
-    if target_model not in available_models:
-        available_models.insert(0, target_model)
-    else:
-        available_models.remove(target_model)
-        available_models.insert(0, target_model)
+    st.success(f"Running on: {target_model}")
 
-    selected_gemini = st.selectbox("Modello:", available_models, index=0)
-
-    st.subheader("🎨 Artista")
-    image_styles = ["Fotorealistico", "Cinematico", "Digital Art", "Illustrazione 3D"]
-    selected_style = st.selectbox("Stile:", image_styles, index=0)
-    
     st.divider()
     if st.button("🔄 Reset Totale", type="secondary", use_container_width=True):
         st.session_state.app_state = "UPLOAD"
@@ -106,10 +93,7 @@ with st.sidebar:
 # --- FUNZIONI CORE ---
 
 def get_images_recursive_by_weight(shapes):
-    """
-    Cerca immagini ricorsivamente.
-    CRITERIO VINCENTE: PESO IN BYTE.
-    """
+    """Cerca immagini ricorsivamente. Vince il PESO (Bytes)."""
     images_found = []
     for shape in shapes:
         if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
@@ -130,7 +114,7 @@ def get_images_recursive_by_weight(shapes):
     return images_found
 
 def analyze_pptx_content(file_obj):
-    """Estrae testo e immagini (Vince la più pesante)."""
+    """Estrae testo e immagini (Heavyweight logic)."""
     prs = Presentation(file_obj)
     full_text = []
     extracted_images = {} 
@@ -161,81 +145,91 @@ def analyze_pptx_content(file_obj):
             candidates.extend(get_images_recursive_by_weight(slide.slide_layout.slide_master.shapes))
         
         if candidates:
-            # Ordina per PESO decrescente
             candidates.sort(key=lambda x: x[0], reverse=True)
             extracted_images[i] = candidates[0][1]
     
     return "\n---\n".join(full_text), extracted_images
 
-def brain_process(text, model_name, style_choice):
-    style_instruction = "Photorealistic, highly detailed, 8k resolution"
-    if "Digital Art" in style_choice: style_instruction = "Digital art, vibrant colors"
-    elif "Illustrazione 3D" in style_choice: style_instruction = "3D render, cute, clay style"
-    elif "Cinematico" in style_choice: style_instruction = "Cinematic shot, dramatic lighting"
-
+def brain_process(text, model_name="models/gemini-3-pro-preview"):
+    """
+    PROMPT AGGRESSIVO E DETTAGLIATO - USING GEMINI 3 PRO PREVIEW
+    """
     prompt = f"""
-    Sei un Event Manager. Analizza il testo (Slide + Note).
+    Sei un SENIOR COPYWRITER esperto in Team Building e vendita di eventi B2B.
+    Il tuo compito è analizzare il materiale grezzo (Slide + Note) e riscriverlo per VENDERE il format.
     
-    ⚠️ OBIETTIVI COPYWRITING:
-    - **Cover:** Titolo del Format e Slogan.
-    - **Pag 2 (Azione):** Dinamica del gioco, energica.
-    - **Pag 3 (Emozione):** Atmosfera, divertimento, effetto WOW.
-    - **Pag 4 (Tecnica):** Dati tecnici precisi.
-    - **Pag 7 (Costi):** Testo UNICO che riassume cosa è compreso e cosa è escluso.
+    ⚠️ REGOLE ASSOLUTE DI STILE:
+    1. **NO EMOJI**. Sei professionale.
+    2. **LUNGHEZZA:** I testi descrittivi (Pagina 2 e 3) devono essere CORPOSI (almeno 130-150 parole l'uno). Non fare riassuntini. Scrivi testi ricchi, ben articolati in paragrafi.
+    3. **FORMATTAZIONE:** Poiché non puoi usare il grassetto, usa il **MAIUSCOLO** per enfatizzare le parole chiave e usa gli elenchi puntati (simbolo •) per dare ordine.
+    4. **TONO:** Persuasivo, incoraggiante, emozionale ma concreto.
+    
+    ⚠️ ISTRUZIONI PER PAGINA:
+    - **Cover:** Titolo del Format (Esatto) e Sottotitolo (Slogan).
+    - **Pag 2 (L'Esperienza):** Descrivi la dinamica del gioco. Cosa succede? Come si interagisce? Scrivi TANTO testo. Fai immaginare al cliente di essere lì.
+    - **Pag 3 (Il Valore):** Descrivi l'atmosfera, il coinvolgimento, l'energia. Perché questo format è unico? Scrivi TANTO testo.
+    - **Pag 4 (Tecnica):** Svolgimento, Logistica, Tecnica. Qui devi essere un CHIRURGO. Elenchi puntati completi. Inserisci OGNI dettaglio tecnico trovato nel testo originale. Non tralasciare nulla.
+    - **Pag 7 (Costi):** Crea una lista chiara e pulita di cosa è INCLUSO e cosa è ESCLUSO. Usa elenchi puntati.
     
     ⚠️ REGOLE LINGUA:
     1. Testi in **ITALIANO**.
     2. Prompt Immagini in **INGLESE**.
     
-    STRUTTURA RICHIESTA (JSON):
+    STRUTTURA JSON:
     {{
         "page_1_cover": {{ 
-            "title": "NOME DEL FORMAT (Esatto)", 
+            "title": "NOME DEL FORMAT", 
             "subtitle": "Slogan",
-            "image_prompt": "Visual description in English for Cover" 
+            "image_prompt": "Visual description in English" 
         }},
         "page_2_desc": {{ 
-            "body": "Descrizione dinamica dell'attività (ca. 60-70 parole).", 
+            "body": "Testo ESTESO (min 130 parole) sull'azione. Usa paragrafi e MAIUSCOLO per enfasi.", 
             "image_prompt": "Visual description in English" 
         }},
         "page_3_desc": {{ 
-            "body": "Descrizione dell'atmosfera e coinvolgimento (ca. 60-70 parole).", 
+            "body": "Testo ESTESO (min 130 parole) sull'emozione. Usa paragrafi e MAIUSCOLO per enfasi.", 
             "image_prompt": "Visual description in English" 
         }},
         "page_4_details": {{
-            "svolgimento": "Fasi dell'attività. Schematico.",
-            "logistica": "Spazi, tempi, numero pax.",
-            "tecnica": "Audio, video, materiali."
+            "svolgimento": "Elenco puntato (•) DETTAGLIATO delle fasi.",
+            "logistica": "Elenco puntato (•) DETTAGLIATO (spazi, tempi, pax).",
+            "tecnica": "Elenco puntato (•) DETTAGLIATO (audio, video, prese)."
         }},
         "page_7_costi": {{
-            "dettaglio": "Testo completo: Il costo include... Il costo non comprende..."
+            "dettaglio": "Elenco puntato (•) CHIARO: IL COSTO INCLUDE... / IL COSTO NON COMPRENDE..."
         }}
     }}
-    Style: {style_instruction}.
     """
     model = genai.GenerativeModel(model_name)
     try:
         resp = model.generate_content(f"{prompt}\n\nTESTO SORGENTE:\n{text}", generation_config={"response_mime_type": "application/json"})
         return json.loads(resp.text)
     except Exception as e:
-        st.error(f"Errore Gemini: {e}")
+        st.error(f"Errore Gemini Brain: {e}")
         return None
 
 def translate_struct_to_english(ai_data):
+    """Traduce la struttura mantenendo la formattazione - USING GEMINI 3 PRO PREVIEW"""
     prompt = """
-    You are a professional copywriter. Translate the values in the following JSON from Italian to English.
-    Do NOT translate keys or 'image_prompt'.
-    KEEP THE FORMAT NAME (TITLE) AS IS. Do not translate proper names.
-    Make the text punchy.
+    You are a professional translator and copywriter. 
+    Translate the values in the following JSON from Italian to English.
+    
+    RULES:
+    1. **KEEP THE FORMAT NAME (TITLE) AS IS**. Do not translate proper names.
+    2. **Translate fully**. Do not summarize. Keep the text long and persuasive.
+    3. **Maintain formatting**: Keep the bullet points (•) and UPPERCASE words for emphasis.
+    4. Do not translate keys or 'image_prompt'.
+    
     Return ONLY valid JSON.
     """
-    model = genai.GenerativeModel("models/gemini-1.5-pro") 
+    # Forziamo Gemini 3 Pro anche qui
+    model = genai.GenerativeModel("models/gemini-3-pro-preview") 
     try:
         resp = model.generate_content(f"{prompt}\n\nJSON:\n{json.dumps(ai_data)}", generation_config={"response_mime_type": "application/json"})
         return json.loads(resp.text)
     except Exception as e:
         print(f"Errore Traduzione Struct: {e}")
-        return ai_data
+        return ai_data 
 
 def get_template_static_text(presentation_id):
     try:
@@ -255,7 +249,8 @@ def get_template_static_text(presentation_id):
 def translate_list_strings(text_list):
     if not text_list: return {}
     prompt = "Translate these Italian strings to English for a corporate presentation. Return JSON {original: translation}."
-    model = genai.GenerativeModel("models/gemini-1.5-pro")
+    # Forziamo Gemini 3 Pro anche qui
+    model = genai.GenerativeModel("models/gemini-3-pro-preview")
     try:
         resp = model.generate_content(f"{prompt}\n\nLIST:\n{json.dumps(text_list)}", generation_config={"response_mime_type": "application/json"})
         return json.loads(resp.text)
@@ -278,9 +273,7 @@ def upload_bytes_to_bucket(image_bytes):
         filename = f"img_{uuid.uuid4()}.png"
         blob = bucket.blob(filename)
         blob.upload_from_string(image_bytes, content_type="image/png")
-        # --- FIX VISUALIZZAZIONE ---
-        blob.make_public() # Rende il file visibile a chiunque abbia il link
-        # ---------------------------
+        blob.make_public() # FONDAMENTALE PER VISIBILITÀ
         return f"https://storage.googleapis.com/{GCS_BUCKET_NAME}/{filename}"
     except Exception as e:
         st.error(f"Errore Upload Bucket: {e}")
@@ -316,39 +309,50 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map, tra
         new_id = copy.get('id')
         
         final_data = ai_data
+        
+        # LOGICA TRADUZIONE
         if translate_mode:
-            st.toast(f"🇬🇧 Traduzione dinamica: {filename}")
+            st.toast(f"🇬🇧 Traduzione AI in corso (Gemini 3 Pro): {filename}")
+            # Traduciamo i dati dinamici
             final_data = translate_struct_to_english(ai_data)
-            st.toast(f"🇬🇧 Traduzione statica: {filename}")
+            
+            # Controllo sicurezza: se la traduzione è identica all'originale, qualcosa non va
+            if final_data['page_2_desc']['body'] == ai_data['page_2_desc']['body']:
+                 st.warning(f"⚠️ Attenzione: La traduzione inglese di {filename} sembra identica all'italiano. Riprovo...")
+                 final_data = translate_struct_to_english(ai_data) # Retry once
+            
+            # Traduciamo i testi statici del template
             static_texts = get_template_static_text(new_id)
             if static_texts:
                 t_map = translate_list_strings(static_texts)
                 apply_static_translations(new_id, t_map)
         
-        # --- TITOLO GLOBALE ---
+        # --- TITOLO GLOBALE (PUNTO 1 RISOLTO) ---
         main_format_title = final_data.get('page_1_cover', {}).get('title', 'Format')
 
         reqs = []
-        # Titolo Globale su tutte le pagine
+        # Sostituzione globale di {{TITLE}} su tutte le slide
         reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': main_format_title}})
-        for i in range(1, 9):
-            reqs.append({'replaceAllText': {'containsText': {'text': f'{{{{TITLE_{i}}}}}'}, 'replaceText': main_format_title}})
-
-        # Page 1
+        
+        # Cover Subtitle
         if 'page_1_cover' in final_data:
             reqs.append({'replaceAllText': {'containsText': {'text': '{{SUBTITLE}}'}, 'replaceText': final_data['page_1_cover'].get('subtitle', '')}})
-        # Page 2
+        
+        # Desc 1
         if 'page_2_desc' in final_data:
             reqs.append({'replaceAllText': {'containsText': {'text': '{{BODY_1}}'}, 'replaceText': final_data['page_2_desc'].get('body', '')}})
-        # Page 3
+        
+        # Desc 2
         if 'page_3_desc' in final_data:
             reqs.append({'replaceAllText': {'containsText': {'text': '{{BODY_2}}'}, 'replaceText': final_data['page_3_desc'].get('body', '')}})
-        # Page 4
+        
+        # Dettagli Tecnici
         if 'page_4_details' in final_data:
             reqs.append({'replaceAllText': {'containsText': {'text': '{{SVOLGIMENTO}}'}, 'replaceText': final_data['page_4_details'].get('svolgimento', '')}})
             reqs.append({'replaceAllText': {'containsText': {'text': '{{LOGISTICA}}'}, 'replaceText': final_data['page_4_details'].get('logistica', '')}})
             reqs.append({'replaceAllText': {'containsText': {'text': '{{TECNICA}}'}, 'replaceText': final_data['page_4_details'].get('tecnica', '')}})
-        # Page 7
+        
+        # Costi
         if 'page_7_costi' in final_data:
             reqs.append({'replaceAllText': {'containsText': {'text': '{{DETTAGLIO_COSTO}}'}, 'replaceText': final_data['page_7_costi'].get('dettaglio', '')}})
 
@@ -364,13 +368,13 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map, tra
                     except: pass
         return new_id
     except Exception as e:
-        print(e)
+        print(f"Error in finalize: {e}")
         return None
 
 # ==========================================
 # MAIN INTERFACE
 # ==========================================
-st.title("🏗️ Slide Monster: FORMAT MODE")
+st.title("🦍 Slide Monster: PRO COPYWRITER")
 
 # --- FASE 1: UPLOAD ---
 if st.session_state.app_state == "UPLOAD":
@@ -389,7 +393,7 @@ if st.session_state.app_state == "UPLOAD":
                     for i, f in enumerate(uploaded):
                         fname = f.name.replace(".pptx", "") + "_ITA"
                         txt, imgs_dict = analyze_pptx_content(f)
-                        data = brain_process(txt, selected_gemini, selected_style)
+                        data = brain_process(txt) # Default a Gemini 3 Pro
                         
                         if data:
                             st.session_state.draft_data[fname] = {"ai_data": data}
@@ -399,23 +403,23 @@ if st.session_state.app_state == "UPLOAD":
                     st.session_state.app_state = "EDIT"
                     st.rerun()
         with col_act2:
-            st.caption("Analisi: Logica Immagini 'Peso Massimo' + Sottotitoli + Costi.")
+            st.caption("Analisi Pro: Testi lunghi, formattazione elenchi, no emoji, traduzione Inglese potenziata.")
 
 # --- FASE 2: EDITING ---
 elif st.session_state.app_state == "EDIT":
     
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
-        st.info("✏️ **Sala di Regia**: Controlla Testi, Immagini e la nuova sezione Costi.")
+        st.info("✏️ **Sala di Regia**: Controlla i contenuti. I testi sono stati generati per essere 'Corporate' e 'Vendevoli'.")
     with col_h2:
         if st.button("💾 SALVA SU DRIVE", type="primary", use_container_width=True):
             bar = st.progress(0)
             total_ops = len(st.session_state.draft_data)
+            
             for i, (fname, content) in enumerate(st.session_state.draft_data.items()):
                 url_map = {}
                 saved = st.session_state.final_images.get(fname, {})
                 
-                # MAPPING IMMAGINI
                 if 'cover' in saved: url_map['IMG_1'] = saved['cover'] 
                 if 'desc_1' in saved: url_map['IMG_2'] = saved['desc_1'] 
                 if 'desc_2' in saved: url_map['IMG_3'] = saved['desc_2'] 
@@ -434,8 +438,9 @@ elif st.session_state.app_state == "EDIT":
                     st.toast(f"🇬🇧 Saving ENG: {fname_eng}")
                     res_eng = worker_bot_finalize(tmpl, fold, fname_eng, content['ai_data'], url_map, translate_mode=True)
 
-                if res_ita: st.success(f"✅ {fname}")
-                else: st.error(f"❌ {fname}")
+                if res_ita: st.success(f"✅ Fatto: {fname}")
+                else: st.error(f"❌ Errore: {fname}")
+                
                 bar.progress((i+1)/total_ops)
             st.balloons()
             time.sleep(2)
@@ -454,8 +459,8 @@ elif st.session_state.app_state == "EDIT":
             c1, c2, c3 = st.columns([1.5, 1, 1])
             with c1:
                 st.markdown("#### Testo Cover")
-                st.caption("Titolo fisso su tutte le slide")
-                new_t = st.text_input("Titolo Format", value=data['page_1_cover'].get('title', ''), key=f"t1_{fname}")
+                st.caption("Questo titolo andrà su TUTTE le slide (sostituisce {{TITLE}})")
+                new_t = st.text_input("Titolo Format (Esatto)", value=data['page_1_cover'].get('title', ''), key=f"t1_{fname}")
                 new_s = st.text_input("Sottotitolo", value=data['page_1_cover'].get('subtitle', ''), key=f"s1_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_1_cover']['title'] = new_t
                 st.session_state.draft_data[fname]['ai_data']['page_1_cover']['subtitle'] = new_s
@@ -464,14 +469,17 @@ elif st.session_state.app_state == "EDIT":
                 p = st.text_area("Prompt", value=data['page_1_cover'].get('image_prompt', ''), height=70, key=f"p1_{fname}")
                 if st.button("Genera", key=f"b1_{fname}"):
                     bytes_img = generate_imagen_safe(p)
-                    if bytes_img: st.session_state.final_images[fname]['cover'] = upload_bytes_to_bucket(bytes_img); st.rerun()
+                    if bytes_img: 
+                        st.session_state.final_images[fname]['cover'] = upload_bytes_to_bucket(bytes_img)
+                        st.rerun() # Refresh immediato
+                
                 if st.session_state.final_images[fname].get('cover'):
-                    st.image(st.session_state.final_images[fname]['cover'], width=150)
-                    st.success("Pronta")
+                    st.image(st.session_state.final_images[fname]['cover'], width=200)
+                    st.success("Immagine Pronta")
             with c3:
                 st.markdown("#### Originale")
                 if orig_imgs.get(0):
-                    st.image(orig_imgs[0], width=150, caption=f"Peso: {len(orig_imgs[0])//1024} KB")
+                    st.image(orig_imgs[0], width=200, caption=f"Peso: {len(orig_imgs[0])//1024} KB")
                     if st.button("Usa Originale", key=f"bo1_{fname}"):
                         st.session_state.final_images[fname]['cover'] = upload_bytes_to_bucket(orig_imgs[0]); st.rerun()
 
@@ -479,23 +487,25 @@ elif st.session_state.app_state == "EDIT":
         with tabs[1]:
             c1, c2, c3 = st.columns([1.5, 1, 1])
             with c1:
-                st.markdown("#### Cosa facciamo")
+                st.markdown("#### L'Esperienza")
                 st.info(f"Titolo Slide: {data['page_1_cover'].get('title', '')}")
-                new_b = st.text_area("Body 1", value=data['page_2_desc'].get('body', ''), height=150, key=f"b2_{fname}")
+                new_b = st.text_area("Body 1 (Lungo e Formattato)", value=data['page_2_desc'].get('body', ''), height=300, key=f"b2_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_2_desc']['body'] = new_b
             with c2:
                 st.markdown("#### AI Image")
                 p = st.text_area("Prompt", value=data['page_2_desc'].get('image_prompt', ''), height=70, key=f"p2_{fname}")
                 if st.button("Genera", key=f"b2_gen_{fname}"):
                     bytes_img = generate_imagen_safe(p)
-                    if bytes_img: st.session_state.final_images[fname]['desc_1'] = upload_bytes_to_bucket(bytes_img); st.rerun()
+                    if bytes_img: 
+                        st.session_state.final_images[fname]['desc_1'] = upload_bytes_to_bucket(bytes_img)
+                        st.rerun()
                 if st.session_state.final_images[fname].get('desc_1'):
-                    st.image(st.session_state.final_images[fname]['desc_1'], width=150)
-                    st.success("Pronta")
+                    st.image(st.session_state.final_images[fname]['desc_1'], width=200)
+                    st.success("Immagine Pronta")
             with c3:
                 st.markdown("#### Originale")
                 if orig_imgs.get(1):
-                    st.image(orig_imgs[1], width=150, caption=f"Peso: {len(orig_imgs[1])//1024} KB")
+                    st.image(orig_imgs[1], width=200, caption=f"Peso: {len(orig_imgs[1])//1024} KB")
                     if st.button("Usa Originale", key=f"bo2_{fname}"):
                         st.session_state.final_images[fname]['desc_1'] = upload_bytes_to_bucket(orig_imgs[1]); st.rerun()
 
@@ -503,23 +513,25 @@ elif st.session_state.app_state == "EDIT":
         with tabs[2]:
             c1, c2, c3 = st.columns([1.5, 1, 1])
             with c1:
-                st.markdown("#### L'Atmosfera")
+                st.markdown("#### Il Valore")
                 st.info(f"Titolo Slide: {data['page_1_cover'].get('title', '')}")
-                new_b = st.text_area("Body 2", value=data['page_3_desc'].get('body', ''), height=150, key=f"b3_{fname}")
+                new_b = st.text_area("Body 2 (Lungo e Formattato)", value=data['page_3_desc'].get('body', ''), height=300, key=f"b3_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_3_desc']['body'] = new_b
             with c2:
                 st.markdown("#### AI Image")
                 p = st.text_area("Prompt", value=data['page_3_desc'].get('image_prompt', ''), height=70, key=f"p3_{fname}")
                 if st.button("Genera", key=f"b3_gen_{fname}"):
                     bytes_img = generate_imagen_safe(p)
-                    if bytes_img: st.session_state.final_images[fname]['desc_2'] = upload_bytes_to_bucket(bytes_img); st.rerun()
+                    if bytes_img: 
+                        st.session_state.final_images[fname]['desc_2'] = upload_bytes_to_bucket(bytes_img)
+                        st.rerun()
                 if st.session_state.final_images[fname].get('desc_2'):
-                    st.image(st.session_state.final_images[fname]['desc_2'], width=150)
-                    st.success("Pronta")
+                    st.image(st.session_state.final_images[fname]['desc_2'], width=200)
+                    st.success("Immagine Pronta")
             with c3:
                 st.markdown("#### Originale")
                 if orig_imgs.get(2):
-                    st.image(orig_imgs[2], width=150, caption=f"Peso: {len(orig_imgs[2])//1024} KB")
+                    st.image(orig_imgs[2], width=200, caption=f"Peso: {len(orig_imgs[2])//1024} KB")
                     if st.button("Usa Originale", key=f"bo3_{fname}"):
                         st.session_state.final_images[fname]['desc_2'] = upload_bytes_to_bucket(orig_imgs[2]); st.rerun()
 
@@ -529,21 +541,21 @@ elif st.session_state.app_state == "EDIT":
             c1, c2, c3 = st.columns(3)
             with c1:
                 st.markdown("**Svolgimento**")
-                v1 = st.text_area("Testo", value=data['page_4_details'].get('svolgimento', ''), height=250, key=f"d1_{fname}")
+                v1 = st.text_area("Testo", value=data['page_4_details'].get('svolgimento', ''), height=400, key=f"d1_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_4_details']['svolgimento'] = v1
             with c2:
                 st.markdown("**Logistica**")
-                v2 = st.text_area("Testo", value=data['page_4_details'].get('logistica', ''), height=250, key=f"d2_{fname}")
+                v2 = st.text_area("Testo", value=data['page_4_details'].get('logistica', ''), height=400, key=f"d2_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_4_details']['logistica'] = v2
             with c3:
                 st.markdown("**Tecnica**")
-                v3 = st.text_area("Testo", value=data['page_4_details'].get('tecnica', ''), height=250, key=f"d3_{fname}")
+                v3 = st.text_area("Testo", value=data['page_4_details'].get('tecnica', ''), height=400, key=f"d3_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_4_details']['tecnica'] = v3
 
-        # --- TAB 5: COSTI (UNICO CAMPO) ---
+        # --- TAB 5: COSTI ---
         with tabs[4]:
             st.markdown("#### 💰 Dettagli Economici (Slide 7)")
-            det = st.text_area("Dettaglio Costi", value=data.get('page_7_costi', {}).get('dettaglio', ''), height=300, key=f"c_det_{fname}")
+            det = st.text_area("Dettaglio Costi (Include/Esclude)", value=data.get('page_7_costi', {}).get('dettaglio', ''), height=400, key=f"c_det_{fname}")
             
             if 'page_7_costi' not in st.session_state.draft_data[fname]['ai_data']:
                 st.session_state.draft_data[fname]['ai_data']['page_7_costi'] = {}
