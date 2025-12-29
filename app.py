@@ -78,7 +78,6 @@ with st.sidebar:
     st.divider()
 
     st.subheader("🧠 Motore AI")
-    # MODELLO UNICO E DEFINITIVO
     target_model = "models/gemini-3-pro-preview" 
     st.success(f"Running on: {target_model}")
 
@@ -93,7 +92,6 @@ with st.sidebar:
 # --- FUNZIONI CORE ---
 
 def get_images_recursive_by_weight(shapes):
-    """Cerca immagini ricorsivamente. Vince il PESO (Bytes)."""
     images_found = []
     for shape in shapes:
         if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
@@ -114,7 +112,6 @@ def get_images_recursive_by_weight(shapes):
     return images_found
 
 def analyze_pptx_content(file_obj):
-    """Estrae testo e immagini (Heavyweight logic)."""
     prs = Presentation(file_obj)
     full_text = []
     extracted_images = {} 
@@ -151,9 +148,6 @@ def analyze_pptx_content(file_obj):
     return "\n---\n".join(full_text), extracted_images
 
 def brain_process(text, model_name="models/gemini-3-pro-preview"):
-    """
-    PROMPT AGGRESSIVO E DETTAGLIATO - USING GEMINI 3 PRO PREVIEW
-    """
     prompt = f"""
     Sei un SENIOR COPYWRITER esperto in Team Building e vendita di eventi B2B.
     Il tuo compito è analizzare il materiale grezzo (Slide + Note) e riscriverlo per VENDERE il format.
@@ -209,7 +203,6 @@ def brain_process(text, model_name="models/gemini-3-pro-preview"):
         return None
 
 def translate_struct_to_english(ai_data):
-    """Traduce la struttura mantenendo la formattazione - USING GEMINI 3 PRO PREVIEW"""
     prompt = """
     You are a professional translator and copywriter. 
     Translate the values in the following JSON from Italian to English.
@@ -222,7 +215,6 @@ def translate_struct_to_english(ai_data):
     
     Return ONLY valid JSON.
     """
-    # Forziamo Gemini 3 Pro anche qui
     model = genai.GenerativeModel("models/gemini-3-pro-preview") 
     try:
         resp = model.generate_content(f"{prompt}\n\nJSON:\n{json.dumps(ai_data)}", generation_config={"response_mime_type": "application/json"})
@@ -249,7 +241,6 @@ def get_template_static_text(presentation_id):
 def translate_list_strings(text_list):
     if not text_list: return {}
     prompt = "Translate these Italian strings to English for a corporate presentation. Return JSON {original: translation}."
-    # Forziamo Gemini 3 Pro anche qui
     model = genai.GenerativeModel("models/gemini-3-pro-preview")
     try:
         resp = model.generate_content(f"{prompt}\n\nLIST:\n{json.dumps(text_list)}", generation_config={"response_mime_type": "application/json"})
@@ -273,7 +264,7 @@ def upload_bytes_to_bucket(image_bytes):
         filename = f"img_{uuid.uuid4()}.png"
         blob = bucket.blob(filename)
         blob.upload_from_string(image_bytes, content_type="image/png")
-        blob.make_public() # FONDAMENTALE PER VISIBILITÀ
+        blob.make_public() # Rende visibile l'immagine
         return f"https://storage.googleapis.com/{GCS_BUCKET_NAME}/{filename}"
     except Exception as e:
         st.error(f"Errore Upload Bucket: {e}")
@@ -310,49 +301,38 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map, tra
         
         final_data = ai_data
         
-        # LOGICA TRADUZIONE
         if translate_mode:
-            st.toast(f"🇬🇧 Traduzione AI in corso (Gemini 3 Pro): {filename}")
-            # Traduciamo i dati dinamici
+            st.toast(f"🇬🇧 Traduzione AI in corso: {filename}")
             final_data = translate_struct_to_english(ai_data)
             
-            # Controllo sicurezza: se la traduzione è identica all'originale, qualcosa non va
             if final_data['page_2_desc']['body'] == ai_data['page_2_desc']['body']:
-                 st.warning(f"⚠️ Attenzione: La traduzione inglese di {filename} sembra identica all'italiano. Riprovo...")
-                 final_data = translate_struct_to_english(ai_data) # Retry once
+                 st.warning(f"⚠️ Warning: Traduzione inglese identica all'italiano. Riprovo...")
+                 final_data = translate_struct_to_english(ai_data) 
             
-            # Traduciamo i testi statici del template
             static_texts = get_template_static_text(new_id)
             if static_texts:
                 t_map = translate_list_strings(static_texts)
                 apply_static_translations(new_id, t_map)
         
-        # --- TITOLO GLOBALE (PUNTO 1 RISOLTO) ---
         main_format_title = final_data.get('page_1_cover', {}).get('title', 'Format')
 
         reqs = []
-        # Sostituzione globale di {{TITLE}} su tutte le slide
         reqs.append({'replaceAllText': {'containsText': {'text': '{{TITLE}}'}, 'replaceText': main_format_title}})
         
-        # Cover Subtitle
         if 'page_1_cover' in final_data:
             reqs.append({'replaceAllText': {'containsText': {'text': '{{SUBTITLE}}'}, 'replaceText': final_data['page_1_cover'].get('subtitle', '')}})
         
-        # Desc 1
         if 'page_2_desc' in final_data:
             reqs.append({'replaceAllText': {'containsText': {'text': '{{BODY_1}}'}, 'replaceText': final_data['page_2_desc'].get('body', '')}})
         
-        # Desc 2
         if 'page_3_desc' in final_data:
             reqs.append({'replaceAllText': {'containsText': {'text': '{{BODY_2}}'}, 'replaceText': final_data['page_3_desc'].get('body', '')}})
         
-        # Dettagli Tecnici
         if 'page_4_details' in final_data:
             reqs.append({'replaceAllText': {'containsText': {'text': '{{SVOLGIMENTO}}'}, 'replaceText': final_data['page_4_details'].get('svolgimento', '')}})
             reqs.append({'replaceAllText': {'containsText': {'text': '{{LOGISTICA}}'}, 'replaceText': final_data['page_4_details'].get('logistica', '')}})
             reqs.append({'replaceAllText': {'containsText': {'text': '{{TECNICA}}'}, 'replaceText': final_data['page_4_details'].get('tecnica', '')}})
         
-        # Costi
         if 'page_7_costi' in final_data:
             reqs.append({'replaceAllText': {'containsText': {'text': '{{DETTAGLIO_COSTO}}'}, 'replaceText': final_data['page_7_costi'].get('dettaglio', '')}})
 
@@ -393,7 +373,7 @@ if st.session_state.app_state == "UPLOAD":
                     for i, f in enumerate(uploaded):
                         fname = f.name.replace(".pptx", "") + "_ITA"
                         txt, imgs_dict = analyze_pptx_content(f)
-                        data = brain_process(txt) # Default a Gemini 3 Pro
+                        data = brain_process(txt)
                         
                         if data:
                             st.session_state.draft_data[fname] = {"ai_data": data}
@@ -410,7 +390,7 @@ elif st.session_state.app_state == "EDIT":
     
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
-        st.info("✏️ **Sala di Regia**: Controlla i contenuti. I testi sono stati generati per essere 'Corporate' e 'Vendevoli'.")
+        st.info("✏️ **Sala di Regia**: Layout verticale per massima leggibilità.")
     with col_h2:
         if st.button("💾 SALVA SU DRIVE", type="primary", use_container_width=True):
             bar = st.progress(0)
@@ -424,11 +404,9 @@ elif st.session_state.app_state == "EDIT":
                 if 'desc_1' in saved: url_map['IMG_2'] = saved['desc_1'] 
                 if 'desc_2' in saved: url_map['IMG_3'] = saved['desc_2'] 
                 
-                # ITA
                 st.toast(f"🇮🇹 Saving ITA: {fname}")
                 res_ita = worker_bot_finalize(tmpl, fold, fname, content['ai_data'], url_map, translate_mode=False)
                 
-                # ENG
                 if make_english:
                     if "_ITA" in fname:
                         fname_eng = fname.replace("_ITA", "_ENG")
@@ -451,110 +429,115 @@ elif st.session_state.app_state == "EDIT":
         
         st.markdown(f"## 📂 {fname}")
         
-        # AGGIUNTO IL TAB COSTI
         tabs = st.tabs(["🏠 1. Cover", "📄 2. L'Esperienza", "📄 3. L'Emozione", "🛠️ 4. Scheda Tecnica", "💰 7. Costi"])
         
         # --- TAB 1: COVER ---
         with tabs[0]:
-            c1, c2, c3 = st.columns([1.5, 1, 1])
-            with c1:
-                st.markdown("#### Testo Cover")
-                st.caption("Questo titolo andrà su TUTTE le slide (sostituisce {{TITLE}})")
-                new_t = st.text_input("Titolo Format (Esatto)", value=data['page_1_cover'].get('title', ''), key=f"t1_{fname}")
-                new_s = st.text_input("Sottotitolo", value=data['page_1_cover'].get('subtitle', ''), key=f"s1_{fname}")
-                st.session_state.draft_data[fname]['ai_data']['page_1_cover']['title'] = new_t
-                st.session_state.draft_data[fname]['ai_data']['page_1_cover']['subtitle'] = new_s
-            with c2:
-                st.markdown("#### AI Image")
-                p = st.text_area("Prompt", value=data['page_1_cover'].get('image_prompt', ''), height=70, key=f"p1_{fname}")
-                if st.button("Genera", key=f"b1_{fname}"):
-                    bytes_img = generate_imagen_safe(p)
-                    if bytes_img: 
-                        st.session_state.final_images[fname]['cover'] = upload_bytes_to_bucket(bytes_img)
-                        st.rerun() # Refresh immediato
+            st.subheader("📝 Testi Cover")
+            new_t = st.text_input("Titolo Format (Globale)", value=data['page_1_cover'].get('title', ''), key=f"t1_{fname}")
+            new_s = st.text_input("Sottotitolo", value=data['page_1_cover'].get('subtitle', ''), key=f"s1_{fname}")
+            st.session_state.draft_data[fname]['ai_data']['page_1_cover']['title'] = new_t
+            st.session_state.draft_data[fname]['ai_data']['page_1_cover']['subtitle'] = new_s
+            
+            st.divider()
+            
+            c_ai, c_org = st.columns([1, 1], gap="large")
+            with c_ai:
+                st.info("🤖 **AI Image Studio**")
+                p = st.text_area("Prompt", value=data['page_1_cover'].get('image_prompt', ''), height=100, key=f"p1_{fname}")
+                if st.button("Genera Immagine", key=f"b1_{fname}", use_container_width=True):
+                    with st.spinner("🎨 Sto dipingendo... attendi..."):
+                        bytes_img = generate_imagen_safe(p)
+                        if bytes_img: 
+                            st.session_state.final_images[fname]['cover'] = upload_bytes_to_bucket(bytes_img)
+                            st.rerun()
                 
                 if st.session_state.final_images[fname].get('cover'):
-                    st.image(st.session_state.final_images[fname]['cover'], width=200)
-                    st.success("Immagine Pronta")
-            with c3:
-                st.markdown("#### Originale")
+                    st.image(st.session_state.final_images[fname]['cover'], use_container_width=True)
+            
+            with c_org:
+                st.warning("📁 **Originale PPT**")
                 if orig_imgs.get(0):
-                    st.image(orig_imgs[0], width=200, caption=f"Peso: {len(orig_imgs[0])//1024} KB")
-                    if st.button("Usa Originale", key=f"bo1_{fname}"):
+                    st.image(orig_imgs[0], caption=f"Originale ({len(orig_imgs[0])//1024} KB)", use_container_width=True)
+                    if st.button("Usa Originale", key=f"bo1_{fname}", use_container_width=True):
                         st.session_state.final_images[fname]['cover'] = upload_bytes_to_bucket(orig_imgs[0]); st.rerun()
 
         # --- TAB 2: DESC 1 ---
         with tabs[1]:
-            c1, c2, c3 = st.columns([1.5, 1, 1])
-            with c1:
-                st.markdown("#### L'Esperienza")
-                st.info(f"Titolo Slide: {data['page_1_cover'].get('title', '')}")
-                new_b = st.text_area("Body 1 (Lungo e Formattato)", value=data['page_2_desc'].get('body', ''), height=300, key=f"b2_{fname}")
-                st.session_state.draft_data[fname]['ai_data']['page_2_desc']['body'] = new_b
-            with c2:
-                st.markdown("#### AI Image")
-                p = st.text_area("Prompt", value=data['page_2_desc'].get('image_prompt', ''), height=70, key=f"p2_{fname}")
-                if st.button("Genera", key=f"b2_gen_{fname}"):
-                    bytes_img = generate_imagen_safe(p)
-                    if bytes_img: 
-                        st.session_state.final_images[fname]['desc_1'] = upload_bytes_to_bucket(bytes_img)
-                        st.rerun()
+            st.subheader("📝 L'Esperienza")
+            new_b = st.text_area("Body (Azione)", value=data['page_2_desc'].get('body', ''), height=300, key=f"b2_{fname}")
+            st.session_state.draft_data[fname]['ai_data']['page_2_desc']['body'] = new_b
+            
+            st.divider()
+            
+            c_ai, c_org = st.columns([1, 1], gap="large")
+            with c_ai:
+                st.info("🤖 **AI Image Studio**")
+                p = st.text_area("Prompt", value=data['page_2_desc'].get('image_prompt', ''), height=100, key=f"p2_{fname}")
+                if st.button("Genera Immagine", key=f"b2_gen_{fname}", use_container_width=True):
+                    with st.spinner("🎨 Sto dipingendo..."):
+                        bytes_img = generate_imagen_safe(p)
+                        if bytes_img: 
+                            st.session_state.final_images[fname]['desc_1'] = upload_bytes_to_bucket(bytes_img)
+                            st.rerun()
                 if st.session_state.final_images[fname].get('desc_1'):
-                    st.image(st.session_state.final_images[fname]['desc_1'], width=200)
-                    st.success("Immagine Pronta")
-            with c3:
-                st.markdown("#### Originale")
+                    st.image(st.session_state.final_images[fname]['desc_1'], use_container_width=True)
+
+            with c_org:
+                st.warning("📁 **Originale PPT**")
                 if orig_imgs.get(1):
-                    st.image(orig_imgs[1], width=200, caption=f"Peso: {len(orig_imgs[1])//1024} KB")
-                    if st.button("Usa Originale", key=f"bo2_{fname}"):
+                    st.image(orig_imgs[1], use_container_width=True)
+                    if st.button("Usa Originale", key=f"bo2_{fname}", use_container_width=True):
                         st.session_state.final_images[fname]['desc_1'] = upload_bytes_to_bucket(orig_imgs[1]); st.rerun()
 
         # --- TAB 3: DESC 2 ---
         with tabs[2]:
-            c1, c2, c3 = st.columns([1.5, 1, 1])
-            with c1:
-                st.markdown("#### Il Valore")
-                st.info(f"Titolo Slide: {data['page_1_cover'].get('title', '')}")
-                new_b = st.text_area("Body 2 (Lungo e Formattato)", value=data['page_3_desc'].get('body', ''), height=300, key=f"b3_{fname}")
-                st.session_state.draft_data[fname]['ai_data']['page_3_desc']['body'] = new_b
-            with c2:
-                st.markdown("#### AI Image")
-                p = st.text_area("Prompt", value=data['page_3_desc'].get('image_prompt', ''), height=70, key=f"p3_{fname}")
-                if st.button("Genera", key=f"b3_gen_{fname}"):
-                    bytes_img = generate_imagen_safe(p)
-                    if bytes_img: 
-                        st.session_state.final_images[fname]['desc_2'] = upload_bytes_to_bucket(bytes_img)
-                        st.rerun()
+            st.subheader("📝 Il Valore")
+            new_b = st.text_area("Body (Emozione)", value=data['page_3_desc'].get('body', ''), height=300, key=f"b3_{fname}")
+            st.session_state.draft_data[fname]['ai_data']['page_3_desc']['body'] = new_b
+            
+            st.divider()
+            
+            c_ai, c_org = st.columns([1, 1], gap="large")
+            with c_ai:
+                st.info("🤖 **AI Image Studio**")
+                p = st.text_area("Prompt", value=data['page_3_desc'].get('image_prompt', ''), height=100, key=f"p3_{fname}")
+                if st.button("Genera Immagine", key=f"b3_gen_{fname}", use_container_width=True):
+                    with st.spinner("🎨 Sto dipingendo..."):
+                        bytes_img = generate_imagen_safe(p)
+                        if bytes_img: 
+                            st.session_state.final_images[fname]['desc_2'] = upload_bytes_to_bucket(bytes_img)
+                            st.rerun()
                 if st.session_state.final_images[fname].get('desc_2'):
-                    st.image(st.session_state.final_images[fname]['desc_2'], width=200)
-                    st.success("Immagine Pronta")
-            with c3:
-                st.markdown("#### Originale")
+                    st.image(st.session_state.final_images[fname]['desc_2'], use_container_width=True)
+
+            with c_org:
+                st.warning("📁 **Originale PPT**")
                 if orig_imgs.get(2):
-                    st.image(orig_imgs[2], width=200, caption=f"Peso: {len(orig_imgs[2])//1024} KB")
-                    if st.button("Usa Originale", key=f"bo3_{fname}"):
+                    st.image(orig_imgs[2], use_container_width=True)
+                    if st.button("Usa Originale", key=f"bo3_{fname}", use_container_width=True):
                         st.session_state.final_images[fname]['desc_2'] = upload_bytes_to_bucket(orig_imgs[2]); st.rerun()
 
         # --- TAB 4: DETAILS ---
         with tabs[3]:
-            st.markdown("#### 🛠️ Dettagli Tecnici")
+            st.subheader("🛠️ Dettagli Tecnici")
             c1, c2, c3 = st.columns(3)
             with c1:
                 st.markdown("**Svolgimento**")
-                v1 = st.text_area("Testo", value=data['page_4_details'].get('svolgimento', ''), height=400, key=f"d1_{fname}")
+                v1 = st.text_area("Lista fasi", value=data['page_4_details'].get('svolgimento', ''), height=400, key=f"d1_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_4_details']['svolgimento'] = v1
             with c2:
                 st.markdown("**Logistica**")
-                v2 = st.text_area("Testo", value=data['page_4_details'].get('logistica', ''), height=400, key=f"d2_{fname}")
+                v2 = st.text_area("Lista logistica", value=data['page_4_details'].get('logistica', ''), height=400, key=f"d2_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_4_details']['logistica'] = v2
             with c3:
                 st.markdown("**Tecnica**")
-                v3 = st.text_area("Testo", value=data['page_4_details'].get('tecnica', ''), height=400, key=f"d3_{fname}")
+                v3 = st.text_area("Lista tecnica", value=data['page_4_details'].get('tecnica', ''), height=400, key=f"d3_{fname}")
                 st.session_state.draft_data[fname]['ai_data']['page_4_details']['tecnica'] = v3
 
         # --- TAB 5: COSTI ---
         with tabs[4]:
-            st.markdown("#### 💰 Dettagli Economici (Slide 7)")
+            st.subheader("💰 Dettagli Economici (Slide 7)")
             det = st.text_area("Dettaglio Costi (Include/Esclude)", value=data.get('page_7_costi', {}).get('dettaglio', ''), height=400, key=f"c_det_{fname}")
             
             if 'page_7_costi' not in st.session_state.draft_data[fname]['ai_data']:
