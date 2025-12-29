@@ -14,7 +14,7 @@ import uuid
 import io
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Slide Monster: PRO COPYWRITER", page_icon="🦍", layout="wide")
+st.set_page_config(page_title="Slide Monster: GOD MODE", page_icon="🦍", layout="wide")
 
 # ======================================================
 # ⚙️ RECUPERO DATI DA SECRETS
@@ -65,10 +65,10 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# SIDEBAR
+# SIDEBAR (RIPRISTINATA)
 # ==========================================
 with st.sidebar:
-    st.header("🦍 Slide Monster PRO")
+    st.header("🦍 Slide Monster")
     
     with st.expander("⚙️ Configurazione Drive", expanded=True):
         tmpl = st.text_input("ID Template PPT", value=DEF_TEMPLATE_ID)
@@ -77,9 +77,16 @@ with st.sidebar:
 
     st.divider()
 
-    st.subheader("🧠 Motore AI")
-    target_model = "models/gemini-3-pro-preview" 
-    st.success(f"Running on: {target_model}")
+    st.subheader("🧠 Cervello (Testo)")
+    # Menu a tendina per Gemini
+    gemini_options = ["models/gemini-3-pro-preview", "models/gemini-1.5-pro"]
+    selected_gemini = st.selectbox("Modello Testo:", gemini_options, index=0)
+
+    st.subheader("🎨 Artista (Grafica)")
+    # Menu a tendina per Imagen
+    # Nota: Imagen 3 è la versione "Fast/Pro" attuale. 
+    imagen_options = ["imagen-3.0-generate-001", "imagen-3.0-fast-generate-001"]
+    selected_imagen = st.selectbox("Modello Immagini:", imagen_options, index=0)
 
     st.divider()
     if st.button("🔄 Reset Totale", type="secondary", use_container_width=True):
@@ -92,6 +99,7 @@ with st.sidebar:
 # --- FUNZIONI CORE ---
 
 def get_images_recursive_by_weight(shapes):
+    """Cerca immagini ricorsivamente. Vince il PESO (Bytes)."""
     images_found = []
     for shape in shapes:
         if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
@@ -112,6 +120,7 @@ def get_images_recursive_by_weight(shapes):
     return images_found
 
 def analyze_pptx_content(file_obj):
+    """Estrae testo e immagini (Heavyweight logic)."""
     prs = Presentation(file_obj)
     full_text = []
     extracted_images = {} 
@@ -147,7 +156,8 @@ def analyze_pptx_content(file_obj):
     
     return "\n---\n".join(full_text), extracted_images
 
-def brain_process(text, model_name="models/gemini-3-pro-preview"):
+def brain_process(text, model_name):
+    """PROMPT PRO COPYWRITER"""
     prompt = f"""
     Sei un SENIOR COPYWRITER esperto in Team Building e vendita di eventi B2B.
     Il tuo compito è analizzare il materiale grezzo (Slide + Note) e riscriverlo per VENDERE il format.
@@ -155,43 +165,20 @@ def brain_process(text, model_name="models/gemini-3-pro-preview"):
     ⚠️ REGOLE ASSOLUTE DI STILE:
     1. **NO EMOJI**. Sei professionale.
     2. **LUNGHEZZA:** I testi descrittivi (Pagina 2 e 3) devono essere CORPOSI (almeno 130-150 parole l'uno). Non fare riassuntini. Scrivi testi ricchi, ben articolati in paragrafi.
-    3. **FORMATTAZIONE:** Poiché non puoi usare il grassetto, usa il **MAIUSCOLO** per enfatizzare le parole chiave e usa gli elenchi puntati (simbolo •) per dare ordine.
+    3. **FORMATTAZIONE:** Usa il **MAIUSCOLO** per le parole chiave e gli elenchi puntati (simbolo •).
     4. **TONO:** Persuasivo, incoraggiante, emozionale ma concreto.
-    
-    ⚠️ ISTRUZIONI PER PAGINA:
-    - **Cover:** Titolo del Format (Esatto) e Sottotitolo (Slogan).
-    - **Pag 2 (L'Esperienza):** Descrivi la dinamica del gioco. Cosa succede? Come si interagisce? Scrivi TANTO testo. Fai immaginare al cliente di essere lì.
-    - **Pag 3 (Il Valore):** Descrivi l'atmosfera, il coinvolgimento, l'energia. Perché questo format è unico? Scrivi TANTO testo.
-    - **Pag 4 (Tecnica):** Svolgimento, Logistica, Tecnica. Qui devi essere un CHIRURGO. Elenchi puntati completi. Inserisci OGNI dettaglio tecnico trovato nel testo originale. Non tralasciare nulla.
-    - **Pag 7 (Costi):** Crea una lista chiara e pulita di cosa è INCLUSO e cosa è ESCLUSO. Usa elenchi puntati.
-    
-    ⚠️ REGOLE LINGUA:
-    1. Testi in **ITALIANO**.
-    2. Prompt Immagini in **INGLESE**.
     
     STRUTTURA JSON:
     {{
-        "page_1_cover": {{ 
-            "title": "NOME DEL FORMAT", 
-            "subtitle": "Slogan",
-            "image_prompt": "Visual description in English" 
-        }},
-        "page_2_desc": {{ 
-            "body": "Testo ESTESO (min 130 parole) sull'azione. Usa paragrafi e MAIUSCOLO per enfasi.", 
-            "image_prompt": "Visual description in English" 
-        }},
-        "page_3_desc": {{ 
-            "body": "Testo ESTESO (min 130 parole) sull'emozione. Usa paragrafi e MAIUSCOLO per enfasi.", 
-            "image_prompt": "Visual description in English" 
-        }},
+        "page_1_cover": {{ "title": "NOME DEL FORMAT", "subtitle": "Slogan", "image_prompt": "Visual description in English" }},
+        "page_2_desc": {{ "body": "Testo ESTESO (min 130 parole) sull'azione. Usa paragrafi e MAIUSCOLO per enfasi.", "image_prompt": "Visual description in English" }},
+        "page_3_desc": {{ "body": "Testo ESTESO (min 130 parole) sull'emozione. Usa paragrafi e MAIUSCOLO per enfasi.", "image_prompt": "Visual description in English" }},
         "page_4_details": {{
             "svolgimento": "Elenco puntato (•) DETTAGLIATO delle fasi.",
             "logistica": "Elenco puntato (•) DETTAGLIATO (spazi, tempi, pax).",
             "tecnica": "Elenco puntato (•) DETTAGLIATO (audio, video, prese)."
         }},
-        "page_7_costi": {{
-            "dettaglio": "Elenco puntato (•) CHIARO: IL COSTO INCLUDE... / IL COSTO NON COMPRENDE..."
-        }}
+        "page_7_costi": {{ "dettaglio": "Elenco puntato (•) CHIARO: IL COSTO INCLUDE... / IL COSTO NON COMPRENDE..." }}
     }}
     """
     model = genai.GenerativeModel(model_name)
@@ -202,20 +189,17 @@ def brain_process(text, model_name="models/gemini-3-pro-preview"):
         st.error(f"Errore Gemini Brain: {e}")
         return None
 
-def translate_struct_to_english(ai_data):
+def translate_struct_to_english(ai_data, model_name):
     prompt = """
     You are a professional translator and copywriter. 
     Translate the values in the following JSON from Italian to English.
-    
     RULES:
     1. **KEEP THE FORMAT NAME (TITLE) AS IS**. Do not translate proper names.
     2. **Translate fully**. Do not summarize. Keep the text long and persuasive.
-    3. **Maintain formatting**: Keep the bullet points (•) and UPPERCASE words for emphasis.
-    4. Do not translate keys or 'image_prompt'.
-    
+    3. **Maintain formatting**: Keep the bullet points (•) and UPPERCASE words.
     Return ONLY valid JSON.
     """
-    model = genai.GenerativeModel("models/gemini-3-pro-preview") 
+    model = genai.GenerativeModel(model_name) 
     try:
         resp = model.generate_content(f"{prompt}\n\nJSON:\n{json.dumps(ai_data)}", generation_config={"response_mime_type": "application/json"})
         return json.loads(resp.text)
@@ -226,22 +210,21 @@ def translate_struct_to_english(ai_data):
 def get_template_static_text(presentation_id):
     try:
         prs = slides_service.presentations().get(presentationId=presentation_id).execute()
-        texts_to_translate = set()
+        texts = set()
         for slide in prs.get('slides', []):
             for el in slide.get('pageElements', []):
                 if 'shape' in el and 'text' in el['shape']:
                     for tr in el['shape']['text']['textElements']:
                         if 'textRun' in tr and 'content' in tr['textRun']:
-                            content = tr['textRun']['content'].strip()
-                            if content and "{{" not in content and "}}" not in content and len(content) > 2:
-                                texts_to_translate.add(content)
-        return list(texts_to_translate)
+                            c = tr['textRun']['content'].strip()
+                            if c and "{{" not in c and "}}" not in c and len(c) > 2: texts.add(c)
+        return list(texts)
     except: return []
 
-def translate_list_strings(text_list):
+def translate_list_strings(text_list, model_name):
     if not text_list: return {}
     prompt = "Translate these Italian strings to English for a corporate presentation. Return JSON {original: translation}."
-    model = genai.GenerativeModel("models/gemini-3-pro-preview")
+    model = genai.GenerativeModel(model_name)
     try:
         resp = model.generate_content(f"{prompt}\n\nLIST:\n{json.dumps(text_list)}", generation_config={"response_mime_type": "application/json"})
         return json.loads(resp.text)
@@ -254,9 +237,8 @@ def apply_static_translations(presentation_id, translation_map):
         if it and en and it != en:
             reqs.append({'replaceAllText': {'containsText': {'text': it, 'matchCase': True}, 'replaceText': en}})
     if reqs:
-        chunk_size = 50
-        for i in range(0, len(reqs), chunk_size):
-            try: slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': reqs[i:i+chunk_size]}).execute()
+        for i in range(0, len(reqs), 50):
+            try: slides_service.presentations().batchUpdate(presentationId=presentation_id, body={'requests': reqs[i:i+50]}).execute()
             except: pass
 
 def upload_bytes_to_bucket(image_bytes):
@@ -264,21 +246,26 @@ def upload_bytes_to_bucket(image_bytes):
         filename = f"img_{uuid.uuid4()}.png"
         blob = bucket.blob(filename)
         blob.upload_from_string(image_bytes, content_type="image/png")
-        blob.make_public() # Rende visibile l'immagine
+        blob.make_public() 
         return f"https://storage.googleapis.com/{GCS_BUCKET_NAME}/{filename}"
     except Exception as e:
         st.error(f"Errore Upload Bucket: {e}")
         return None
 
-def generate_imagen_safe(prompt):
+def generate_imagen_safe(prompt, model_name):
     for i in range(3):
         try:
-            model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-001")
+            model = ImageGenerationModel.from_pretrained(model_name)
+            # Parametri fissi per consistenza: 1 immagine, 16:9
             images = model.generate_images(prompt=prompt, number_of_images=1, aspect_ratio="16:9", person_generation="allow_adult")
             if images: return images[0]._image_bytes
         except Exception as e:
-            if "429" in str(e) or "Quota" in str(e): time.sleep(10 * (i+1))
-            else: return None
+            if "429" in str(e) or "Quota" in str(e): 
+                time.sleep(10 * (i+1))
+            else: 
+                # Se fallisce, restituisco l'errore per il debug
+                st.error(f"Errore Imagen ({model_name}): {e}")
+                return None
     return None
 
 def find_image_element_id_smart(prs_id, label):
@@ -292,7 +279,7 @@ def find_image_element_id_smart(prs_id, label):
     except: pass
     return None
 
-def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map, translate_mode=False):
+def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map, translate_mode, gemini_model):
     try:
         copy = drive_service.files().copy(
             fileId=template_id, body={'name': filename, 'parents': [folder_id]}, supportsAllDrives=True
@@ -302,16 +289,15 @@ def worker_bot_finalize(template_id, folder_id, filename, ai_data, urls_map, tra
         final_data = ai_data
         
         if translate_mode:
-            st.toast(f"🇬🇧 Traduzione AI in corso: {filename}")
-            final_data = translate_struct_to_english(ai_data)
+            st.toast(f"🇬🇧 Traduzione AI ({gemini_model}): {filename}")
+            final_data = translate_struct_to_english(ai_data, gemini_model)
             
             if final_data['page_2_desc']['body'] == ai_data['page_2_desc']['body']:
-                 st.warning(f"⚠️ Warning: Traduzione inglese identica all'italiano. Riprovo...")
-                 final_data = translate_struct_to_english(ai_data) 
+                 final_data = translate_struct_to_english(ai_data, gemini_model) 
             
             static_texts = get_template_static_text(new_id)
             if static_texts:
-                t_map = translate_list_strings(static_texts)
+                t_map = translate_list_strings(static_texts, gemini_model)
                 apply_static_translations(new_id, t_map)
         
         main_format_title = final_data.get('page_1_cover', {}).get('title', 'Format')
@@ -373,7 +359,7 @@ if st.session_state.app_state == "UPLOAD":
                     for i, f in enumerate(uploaded):
                         fname = f.name.replace(".pptx", "") + "_ITA"
                         txt, imgs_dict = analyze_pptx_content(f)
-                        data = brain_process(txt)
+                        data = brain_process(txt, selected_gemini)
                         
                         if data:
                             st.session_state.draft_data[fname] = {"ai_data": data}
@@ -383,14 +369,14 @@ if st.session_state.app_state == "UPLOAD":
                     st.session_state.app_state = "EDIT"
                     st.rerun()
         with col_act2:
-            st.caption("Analisi Pro: Testi lunghi, formattazione elenchi, no emoji, traduzione Inglese potenziata.")
+            st.caption("Analisi Pro: Testi lunghi, formattazione elenchi, no emoji.")
 
 # --- FASE 2: EDITING ---
 elif st.session_state.app_state == "EDIT":
     
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
-        st.info("✏️ **Sala di Regia**: Layout verticale per massima leggibilità.")
+        st.info("✏️ **Sala di Regia**: Layout verticale. Controlla e Genera.")
     with col_h2:
         if st.button("💾 SALVA SU DRIVE", type="primary", use_container_width=True):
             bar = st.progress(0)
@@ -404,9 +390,11 @@ elif st.session_state.app_state == "EDIT":
                 if 'desc_1' in saved: url_map['IMG_2'] = saved['desc_1'] 
                 if 'desc_2' in saved: url_map['IMG_3'] = saved['desc_2'] 
                 
+                # ITA
                 st.toast(f"🇮🇹 Saving ITA: {fname}")
-                res_ita = worker_bot_finalize(tmpl, fold, fname, content['ai_data'], url_map, translate_mode=False)
+                res_ita = worker_bot_finalize(tmpl, fold, fname, content['ai_data'], url_map, False, selected_gemini)
                 
+                # ENG
                 if make_english:
                     if "_ITA" in fname:
                         fname_eng = fname.replace("_ITA", "_ENG")
@@ -414,7 +402,7 @@ elif st.session_state.app_state == "EDIT":
                         fname_eng = fname + "_ENG"
                         
                     st.toast(f"🇬🇧 Saving ENG: {fname_eng}")
-                    res_eng = worker_bot_finalize(tmpl, fold, fname_eng, content['ai_data'], url_map, translate_mode=True)
+                    res_eng = worker_bot_finalize(tmpl, fold, fname_eng, content['ai_data'], url_map, True, selected_gemini)
 
                 if res_ita: st.success(f"✅ Fatto: {fname}")
                 else: st.error(f"❌ Errore: {fname}")
@@ -443,14 +431,16 @@ elif st.session_state.app_state == "EDIT":
             
             c_ai, c_org = st.columns([1, 1], gap="large")
             with c_ai:
-                st.info("🤖 **AI Image Studio**")
+                st.info(f"🤖 **Generatore AI** ({selected_imagen})")
                 p = st.text_area("Prompt", value=data['page_1_cover'].get('image_prompt', ''), height=100, key=f"p1_{fname}")
                 if st.button("Genera Immagine", key=f"b1_{fname}", use_container_width=True):
                     with st.spinner("🎨 Sto dipingendo... attendi..."):
-                        bytes_img = generate_imagen_safe(p)
+                        bytes_img = generate_imagen_safe(p, selected_imagen)
                         if bytes_img: 
                             st.session_state.final_images[fname]['cover'] = upload_bytes_to_bucket(bytes_img)
                             st.rerun()
+                        else:
+                            st.warning("⚠️ Generazione fallita. Riprova o cambia prompt.")
                 
                 if st.session_state.final_images[fname].get('cover'):
                     st.image(st.session_state.final_images[fname]['cover'], use_container_width=True)
@@ -472,11 +462,11 @@ elif st.session_state.app_state == "EDIT":
             
             c_ai, c_org = st.columns([1, 1], gap="large")
             with c_ai:
-                st.info("🤖 **AI Image Studio**")
+                st.info(f"🤖 **Generatore AI** ({selected_imagen})")
                 p = st.text_area("Prompt", value=data['page_2_desc'].get('image_prompt', ''), height=100, key=f"p2_{fname}")
                 if st.button("Genera Immagine", key=f"b2_gen_{fname}", use_container_width=True):
                     with st.spinner("🎨 Sto dipingendo..."):
-                        bytes_img = generate_imagen_safe(p)
+                        bytes_img = generate_imagen_safe(p, selected_imagen)
                         if bytes_img: 
                             st.session_state.final_images[fname]['desc_1'] = upload_bytes_to_bucket(bytes_img)
                             st.rerun()
@@ -500,11 +490,11 @@ elif st.session_state.app_state == "EDIT":
             
             c_ai, c_org = st.columns([1, 1], gap="large")
             with c_ai:
-                st.info("🤖 **AI Image Studio**")
+                st.info(f"🤖 **Generatore AI** ({selected_imagen})")
                 p = st.text_area("Prompt", value=data['page_3_desc'].get('image_prompt', ''), height=100, key=f"p3_{fname}")
                 if st.button("Genera Immagine", key=f"b3_gen_{fname}", use_container_width=True):
                     with st.spinner("🎨 Sto dipingendo..."):
-                        bytes_img = generate_imagen_safe(p)
+                        bytes_img = generate_imagen_safe(p, selected_imagen)
                         if bytes_img: 
                             st.session_state.final_images[fname]['desc_2'] = upload_bytes_to_bucket(bytes_img)
                             st.rerun()
